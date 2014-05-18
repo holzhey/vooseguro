@@ -1,3 +1,10 @@
+/*
+
+  METAR (VOO SEGURO) - Version 1.0
+  Developed by Alexandre Lehmann Holzhey in 2014
+  
+*/
+
 #include <SoftwareSerial.h>
 #include <Time.h>
 #include <BMP085.h>
@@ -9,51 +16,48 @@
 #include <EEPROM.h>
 #include <Math.h>
 
-#define DHTPIN 7        // Pino do sensor
-#define DHTTYPE DHT22   // Tipo do sensor
-#define BH1750_Device 0x23
-#define LCD_RS 12
-#define LCD_EN 11
-#define LCD_D4 10
-#define LCD_D5 9
-#define LCD_D6 8
-#define LCD_D7 7
-#define BUTTON_MODE_PIN 5
-#define BUTTON_ACTION_PIN 4
-#define TIMER_HUMIDITY 20000
-#define TIMER_BARO 21010
-#define TIMER_TEMP 22030
-#define TIMER_DEWPOINT 23070
-#define TIMER_LUX 2000
-#define TIMER_PUBLISH 30000
-#define TIMER_ANEMOMETER 5000
-#define TIMER_WINDS 20000
-#define DELAY_ANEMOMETER_LOW 50
-#define DELAY_ANEMOMETER_HIGH 20
-#define STS_OK 0
-#define STS_ERR_SENSOR_HUMIDITY 1
-#define MEMORY_ICAO 20
-#define MEMORY_LAT 24
-#define MEMORY_LNG 26
-#define ANEMOMETER_RADIUS 60
+#define DHTPIN 7                                    // Humidity sensor digital in
+#define DHTTYPE DHT22                               // Humidity sensor type
+#define BH1750_Device 0x23                          // I2C address for pressure and temperature sensor
+#define BUTTON_MODE_PIN 5                           // Mode button digital in
+#define BUTTON_ACTION_PIN 4                         // Action button digital in
+#define GPRS_MODULE_POWER_PIN 10                    // GPRS module power on digital out
+#define GPRS_MODULE_RX_PIN 9                        // GPRS module RX digital out
+#define GPRS_MODULE_TX_PIN 8                        // GPRS module TX digital out
+#define I2C_LCD_ADDRESS 0x27                        // I2C LCD address
+#define TIMER_HUMIDITY 20000                        // Humidity read interval
+#define TIMER_BARO 21010                            // Pressure read interval
+#define TIMER_TEMP 22030                            // Temperature read interval
+#define TIMER_DEWPOINT 23070                        // Dewpoint calculation interval
+#define TIMER_LUX 2000                              // Luminosity read interval
+#define TIMER_COVER 60000                           // Clouds cover calculation interval
+#define LUX_SAMPLES (TIMER_COVER / TIMER_LUX)       // Maximum samples for luminosity history
+#define TIMER_METAR 3000                            // Metar rendering interval
+#define TIMER_PUBLISH 2400000                       // Server publish interval
+#define TIMER_ANEMOMETER 5000                       // Instant wind calculation interval
+#define TIMER_WINDS 20000                           // Wind average and constant calculation interval
+#define TIMER_BUTTON_MODE 100                       // Mode button reading interval
+#define DELAY_ANEMOMETER_LOW 50                     // Anemometer interrupt on low delay time
+#define DELAY_ANEMOMETER_HIGH 20                    // Anemometer interrupt on high delay time
+#define STS_OK 0                                    // Status OK for readings
+#define STS_ERR_SENSOR_HUMIDITY 1                   // Status ERROR for humidity reading
+#define MEMORY_ICAO 20                              // EEPROM address for ICAO storage
+#define MEMORY_LAT 24                               // EEPROM address for latitude storage
+#define MEMORY_LNG 26                               // EEPROM address for longitude storage
 
-boolean buttonAction = false;
-boolean buttonMode = false;
-Metro buttonModeMetro = Metro(100);
+boolean buttonAction = false;                       // Flag used for action button control
+boolean buttonMode = false;                         // Flag used for mode button control
+Metro buttonModeMetro = Metro(TIMER_BUTTON_MODE);   // Initialize mode button Metro
 
-int frame = 0;
-int onModulePin= 10;
+RTC_DS1307 rtc;                                     // Initialize RTC clock library
+DHT dht(DHTPIN, DHTTYPE);                           // Initialize humidity sensor library
+BMP085 dps = BMP085();                              // Initialize pressure and temperature sensor library
+LiquidCrystal_I2C lcd(I2C_LCD_ADDRESS, 20, 4);      // Initialize I2C LCD library
 
-RTC_DS1307 rtc;
-DHT dht(DHTPIN, DHTTYPE);  // Configura biblioteca sensor humidade
-BMP085 dps = BMP085();     // Configura sensor pressao e temperatura
-//LiquidCrystal lcd(LCD_RS, LCD_EN, LCD_D4, LCD_D5, LCD_D6, LCD_D7);
-LiquidCrystal_I2C lcd(0x27,20,4);
+SoftwareSerial gsmSerial(GPRS_MODULE_RX_PIN, GPRS_MODULE_TX_PIN); // Initialize GPRS software serial
 
-SoftwareSerial gsmSerial(9, 8);
-
-Metro metarMetro = Metro(3000);
-char metar[60] = "";
+Metro metarMetro = Metro(TIMER_METAR);
+char metar[61] = "";
 
 float humidity = 0;
 Metro humidityMetro = Metro(TIMER_HUMIDITY);
@@ -79,11 +83,21 @@ Metro windsMetro = Metro(TIMER_WINDS);
 unsigned int anemometerRevolutions= 0;
 unsigned long anemometerLastRead = 0;
 unsigned long anemometerInterruptLast = 0;
-float anemometerUnit = (ANEMOMETER_RADIUS * 2 * PI);
 int anemometerState = LOW;
 
 unsigned int lux = 0;
+byte cover = 0;
 Metro luxMetro = Metro(TIMER_LUX);
+Metro coverMetro = Metro(TIMER_COVER);
+struct samples {
+  unsigned int maxLux;
+  unsigned int minLux;
+  unsigned int avgLux;
+  unsigned int history[LUX_SAMPLES];
+  unsigned int samples;
+};
+typedef struct samples LuxSamples;
+LuxSamples luxSamples;
 
 int status = STS_OK;
 char icao[5] = "SBXX";
@@ -183,20 +197,17 @@ char* expected_answer2, unsigned int timeout){
 void power_on(){
 
     uint8_t answer=0;
-
-    // checks if the module is started
     answer = sendATcommand("AT", "OK", 2000);
-    if (answer == 0)
+    while (answer == 0)
     {
-        // power on pulse
-        digitalWrite(onModulePin,HIGH);
+        digitalWrite(GPRS_MODULE_POWER_PIN,HIGH);
         delay(3000);
-        digitalWrite(onModulePin,LOW);
-
-        // waits for an answer from the module
+        digitalWrite(GPRS_MODULE_POWER_PIN,LOW);
+        byte ct = 0;
         while(answer == 0){  
-            // Send AT every two seconds and wait for the answer   
-            answer = sendATcommand("AT", "OK", 2000);    
+            answer = sendATcommand("AT", "OK", 2000);
+            ct++;
+            if (ct > 5) break;
         }
     }
 
@@ -263,7 +274,7 @@ void setup() {
   lcd.print("Inicializando...");
   delay(3000);
   Serial.begin(19200);
-  pinMode(onModulePin, OUTPUT);
+  pinMode(GPRS_MODULE_POWER_PIN, OUTPUT);
   gsmSerial.begin(19200);
   power_on();
   pinMode(BUTTON_MODE_PIN, INPUT);
@@ -310,6 +321,10 @@ void setup() {
   windAvg = 0;
   windAvgFirst = true;
   windGust = 0;
+  luxSamples.maxLux = 0;
+  luxSamples.minLux = 99999;
+  luxSamples.avgLux = 0;
+  luxSamples.samples = 0;
   lcd.clear();
   for (byte x = 0; x < 80; x++) {
     lcd.print('#');
@@ -337,7 +352,6 @@ void gsmHttp() {
     char encMetar[128] = "";
     byte y = 0;
     for (byte x = 0; x < strlen(metar); x++) {
-      Serial.print(metar[x]);
       switch (metar[x]) {
         case 32: // %20
           encMetar[y++] = 37;
@@ -610,6 +624,39 @@ void loop() {
   
   if (luxMetro.check()) {
     lux = BH1750_Read();
+    if (luxSamples.samples == 0) {
+      luxSamples.avgLux = lux;
+    } else {
+      luxSamples.avgLux = (luxSamples.avgLux + lux) / 2;
+    }
+    if (lux > luxSamples.maxLux) {
+      luxSamples.maxLux = lux;
+    }
+    if (lux < luxSamples.minLux) {
+      luxSamples.minLux = lux;
+    }
+    luxSamples.history[luxSamples.samples] = lux;
+    luxSamples.samples++;
+  }
+  
+  if (coverMetro.check()) {
+    unsigned int luxDelta = luxSamples.history[0];
+    Serial.println("Cover calculation...");
+    for (unsigned int x = 1; x < luxSamples.samples; x++) {
+      luxDelta += (luxSamples.history[x] - luxDelta);
+      Serial.print(luxSamples.history[x]);
+      Serial.print(" ");
+    }
+    luxDelta = luxDelta - luxSamples.history[0];
+    Serial.println(" ");
+    Serial.println(luxDelta);
+    unsigned int luxTotalDelta = (luxSamples.maxLux - luxSamples.minLux);
+    float luxFactor = luxDelta / luxTotalDelta;
+    Serial.println(luxTotalDelta);
+    luxSamples.maxLux = 0;
+    luxSamples.minLux = 99999;
+    luxSamples.avgLux = 0;
+    luxSamples.samples = 0;
   }
   
   if (anemometerMetro.check()) {
