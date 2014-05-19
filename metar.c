@@ -21,21 +21,23 @@
 #define BH1750_Device 0x23                          // I2C address for pressure and temperature sensor
 #define BUTTON_MODE_PIN 5                           // Mode button digital in
 #define BUTTON_ACTION_PIN 4                         // Action button digital in
+#define ANEMOMETER_ACTION_LED 13                    // Anemometer interrupt action led digital out       
 #define GPRS_MODULE_POWER_PIN 10                    // GPRS module power on digital out
 #define GPRS_MODULE_RX_PIN 9                        // GPRS module RX digital out
 #define GPRS_MODULE_TX_PIN 8                        // GPRS module TX digital out
 #define I2C_LCD_ADDRESS 0x27                        // I2C LCD address
 #define TIMER_HUMIDITY 20000                        // Humidity read interval
+#define TIMER_ALIVE 10000                            // Alive indicator interval
 #define TIMER_BARO 21010                            // Pressure read interval
 #define TIMER_TEMP 22030                            // Temperature read interval
 #define TIMER_DEWPOINT 23070                        // Dewpoint calculation interval
 #define TIMER_LUX 2000                              // Luminosity read interval
-#define TIMER_COVER 60000                           // Clouds cover calculation interval
+#define TIMER_COVER 66000                           // Clouds cover calculation interval
 #define LUX_SAMPLES (TIMER_COVER / TIMER_LUX)       // Maximum samples for luminosity history
 #define TIMER_METAR 3000                            // Metar rendering interval
-#define TIMER_PUBLISH 2400000                       // Server publish interval
-#define TIMER_ANEMOMETER 5000                       // Instant wind calculation interval
-#define TIMER_WINDS 20000                           // Wind average and constant calculation interval
+#define TIMER_PUBLISH (01 * 60000)                  // Server publish interval
+#define TIMER_ANEMOMETER 6000                       // Instant wind calculation interval
+#define TIMER_WINDS 65000                           // Wind gust and average reset interval
 #define TIMER_BUTTON_MODE 100                       // Mode button reading interval
 #define DELAY_ANEMOMETER_LOW 50                     // Anemometer interrupt on low delay time
 #define DELAY_ANEMOMETER_HIGH 20                    // Anemometer interrupt on high delay time
@@ -44,6 +46,8 @@
 #define MEMORY_ICAO 20                              // EEPROM address for ICAO storage
 #define MEMORY_LAT 24                               // EEPROM address for latitude storage
 #define MEMORY_LNG 26                               // EEPROM address for longitude storage
+#define STR_METAR_SIZE 61                           // Size for METAR char array
+#define STR_METAR_SIZE_ENCODED 100                  // Size for METAR URL ENCODED char array
 
 boolean buttonAction = false;                       // Flag used for action button control
 boolean buttonMode = false;                         // Flag used for mode button control
@@ -54,10 +58,12 @@ DHT dht(DHTPIN, DHTTYPE);                           // Initialize humidity senso
 BMP085 dps = BMP085();                              // Initialize pressure and temperature sensor library
 LiquidCrystal_I2C lcd(I2C_LCD_ADDRESS, 20, 4);      // Initialize I2C LCD library
 
+Metro aliveMetro = Metro(TIMER_ALIVE);             // Initialize alive indicator Metro
+
 SoftwareSerial gsmSerial(GPRS_MODULE_RX_PIN, GPRS_MODULE_TX_PIN); // Initialize GPRS software serial
 
 Metro metarMetro = Metro(TIMER_METAR);
-char metar[61] = "";
+char metar[STR_METAR_SIZE] = "";
 
 float humidity = 0;
 Metro humidityMetro = Metro(TIMER_HUMIDITY);
@@ -115,87 +121,54 @@ unsigned int getSpeedFromRevolutions(unsigned int revolutions, unsigned int elap
 }
 
 
-int8_t sendATcommand(char* ATcommand, char* expected_answer1, unsigned int timeout){
-
+int8_t sendATcommand(char* ATcommand, char* expected_answer1, unsigned int timeout) {
     uint8_t x=0,  answer=0;
     char response[100];
     unsigned long previous;
-
-    memset(response, '\0', 100);    // Initialize the string
-
+    memset(response, '\0', 100);
     delay(100);
-
-    while( gsmSerial.available() > 0) gsmSerial.read();    // Clean the input buffer
-
-    gsmSerial.println(ATcommand);    // Send the AT command 
-
-
-        x = 0;
+    while( gsmSerial.available() > 0) gsmSerial.read();
+    gsmSerial.println(ATcommand);
+    x = 0;
     previous = millis();
-
-    // this loop waits for the answer
     do{
         if(gsmSerial.available() != 0){    
             response[x] = gsmSerial.read();
             x++;
-            // check if the desired answer is in the response of the module
-            if (strstr(response, expected_answer1) != NULL)    
-            {
+            if (strstr(response, expected_answer1) != NULL) {
                 answer = 1;
             }
         }
-        // Waits for the asnwer with time out
-    }
-    while((answer == 0) && ((millis() - previous) < timeout));    
-
+    } while((answer == 0) && ((millis() - previous) < timeout));    
     return answer;
 }
 
-
-
-int8_t sendATcommand2(char* ATcommand, char* expected_answer1, 
-char* expected_answer2, unsigned int timeout){
-
+int8_t sendATcommand2(char* ATcommand, char* expected_answer1, char* expected_answer2, unsigned int timeout) {
     uint8_t x=0,  answer=0;
     char response[100];
     unsigned long previous;
-
-    memset(response, '\0', 100);    // Initialize the string
-
+    memset(response, '\0', 100);
     delay(100);
-
-    while( gsmSerial.available() > 0) gsmSerial.read();    // Clean the input buffer
-
-    gsmSerial.println(ATcommand);    // Send the AT command 
-
-
-        x = 0;
+    while( gsmSerial.available() > 0) gsmSerial.read();
+    gsmSerial.println(ATcommand);
+    x = 0;
     previous = millis();
-
-    // this loop waits for the answer
     do{        
         if(gsmSerial.available() != 0){    
             response[x] = gsmSerial.read();
             x++;
-            // check if the desired answer 1 is in the response of the module
-            if (strstr(response, expected_answer1) != NULL)    
-            {
+            if (strstr(response, expected_answer1) != NULL) {
                 answer = 1;
             }
-            // check if the desired answer 2 is in the response of the module
-            if (strstr(response, expected_answer2) != NULL)    
-            {
+            if (strstr(response, expected_answer2) != NULL) {
                 answer = 2;
             }
         }
-        // Waits for the asnwer with time out
-    }while((answer == 0) && ((millis() - previous) < timeout));    
-
+    } while((answer == 0) && ((millis() - previous) < timeout));    
     return answer;
 }
 
 void power_on(){
-
     uint8_t answer=0;
     answer = sendATcommand("AT", "OK", 2000);
     while (answer == 0)
@@ -207,10 +180,9 @@ void power_on(){
         while(answer == 0){  
             answer = sendATcommand("AT", "OK", 2000);
             ct++;
-            if (ct > 5) break;
+            if (ct > 5) break; // Bug fix if the modem was already on
         }
     }
-
 }
 
 unsigned int getHumidity() {
@@ -229,8 +201,7 @@ unsigned int getBaro() {
   return baro2;
 }
 
-unsigned int BH1750_Read()
-{
+unsigned int BH1750_Read() {
   unsigned int i=0;
   Wire.beginTransmission(BH1750_Device);
   Wire.requestFrom(BH1750_Device, 2);
@@ -243,12 +214,11 @@ unsigned int BH1750_Read()
   return i/1.2;
 }
   
- void Configure_BH1750()
- {
+void Configure_BH1750() {
    Wire.beginTransmission(BH1750_Device);
    Wire.write(0x10); // Set resolution to 1 Lux
    Wire.endTransmission();
- }
+}
 
 unsigned int getTemp() {
   long temp = 0;
@@ -259,10 +229,6 @@ unsigned int getTemp() {
 
 unsigned int getDewPoint(long temperature, float humidity) {
   return (temperature - ((100 - humidity) / 5));
-}
-
-int numPad(int num, int qtd) {
-  return num;
 }
 
 void setup() {
@@ -279,7 +245,7 @@ void setup() {
   power_on();
   pinMode(BUTTON_MODE_PIN, INPUT);
   pinMode(BUTTON_ACTION_PIN, INPUT);
-  pinMode(13, OUTPUT);
+  pinMode(ANEMOMETER_ACTION_LED, OUTPUT);
   Wire.begin();
   Configure_BH1750();
   rtc.begin();
@@ -316,6 +282,7 @@ void setup() {
   dps.init();
   attachInterrupt(0, anemometerInterrupt, CHANGE);
   anemometerLastRead = millis();
+  anemometerInterruptLast = millis();
   anemometerRevolutions = 0;  
   windSpeed = 0;
   windAvg = 0;
@@ -330,14 +297,13 @@ void setup() {
     lcd.print('#');
   }
   delay(2000);
-  //setTime(00, 00, 00, 01, 01, 2012);
   lcd.clear();
 }
 
 void gsmHttp() {
   if (sendATcommand2("AT+CREG?", "+CREG: 0,1", "+CREG: 0,5", 2000) == 0) {
     lcd.setCursor(0, 3);
-    lcd.print("(Offline)");
+    lcd.print(" (Offline)");
   } else {
     lcd.setCursor(0, 3);
     lcd.print("(Enviando)");
@@ -348,30 +314,32 @@ void gsmHttp() {
     sendATcommand("AT+SAPBR=1,1", "OK", 5000);
     sendATcommand("AT+HTTPINIT", "OK", 5000);
 //    sendATcommand("AT+HTTPPARA=\"URL\",\"http://weatherstation.wunderground.com/weatherstation/updateweatherstation.php?action=updateraw&ID=IRIOGRAN45&password=sal24816&dateutc=2014-05-10+19%3A00%3A00&humidity=33&tempf=60\"", "OK", 5000);
-    char url[128] = "AT+HTTPPARA=\"URL\",\"http://bool.eti.br/metar.php?metar=";
-    char encMetar[128] = "";
-    byte y = 0;
-    for (byte x = 0; x < strlen(metar); x++) {
-      switch (metar[x]) {
-        case 32: // %20
-          encMetar[y++] = 37;
-          encMetar[y++] = 50;
-          encMetar[y++] = 48;
-          break;
-        case 47: // %2F
-          encMetar[y++] = 37;
-          encMetar[y++] = 50;
-          encMetar[y++] = 70;
-          break;
-        default:
-          encMetar[y++] = metar[x];
-          break;
-      }
-    }
-    encMetar[y] = 0;
-    strcat(url, encMetar);
-    strcat(url, "\"");
-    sendATcommand(url, "OK", 5000);
+    sendATcommand("AT+HTTPPARA=\"URL\",\"http://bool.eti.br/metar.php?metar=teste\"", "OK", 5000);
+//    char url[60 + STR_METAR_SIZE_ENCODED] = "AT+HTTPPARA=\"URL\",\"http://bool.eti.br/metar.php?metar=";
+//    char encMetar[STR_METAR_SIZE_ENCODED];
+//    memset(encMetar, '\0', STR_METAR_SIZE_ENCODED);
+//    byte y = 0;
+//    for (byte x = 0; x < strlen(metar); x++) {
+//      switch (metar[x]) {
+//        case 32: // %20
+//          encMetar[y++] = 37;
+//          encMetar[y++] = 50;
+//          encMetar[y++] = 48;
+//          break;
+//        case 47: // %2F
+//          encMetar[y++] = 37;
+//          encMetar[y++] = 50;
+//          encMetar[y++] = 70;
+//          break;
+//        default:
+//          encMetar[y++] = metar[x];
+//          break;
+//      }
+//    }
+//    encMetar[y] = 0;
+//    strcat(url, encMetar);
+//    strcat(url, "\"");
+//    sendATcommand(url, "OK", 5000);
     sendATcommand("AT+HTTPACTION=0", "OK", 15000);
     //gsmSerial.println("AT+HTTPREAD");
     //delay(1000);
@@ -387,7 +355,7 @@ void anemometerInterrupt() {
   if (anemometerInterruptLast < millis()) {
     if (anemometerState != digitalRead(2)) {
       anemometerState = digitalRead(2);
-      digitalWrite(13, anemometerState);
+      digitalWrite(ANEMOMETER_ACTION_LED, anemometerState);
       if (anemometerState == HIGH) {
         anemometerRevolutions++;
         anemometerInterruptLast = millis() + DELAY_ANEMOMETER_HIGH;
@@ -444,29 +412,39 @@ char* zeroPad(char* subject, byte sz) {
 }
 
 void renderMetar(long temp, long dewpoint, float humidity, long baro, unsigned int lux) {
-    if (windAvg != -1) {
-      memset(metar, '\0', 60);
-      strcat(metar, "METAR ");
-      strcat(metar, icao);
-      strcat(metar, " ");
-      DateTime now = rtc.now();
-      char buf[8];
-      strcat(metar, zeroPad(utoa(now.day(), buf, 10), 2));
-      strcat(metar, zeroPad(utoa(now.hour(), buf, 10), 2));
-      strcat(metar, zeroPad(utoa(now.minute(), buf, 10), 2));
-      strcat(metar, "   ");
-      strcat(metar, utoa(windAvg, buf, 10));
+    memset(metar, '\0', STR_METAR_SIZE);
+    strcat(metar, "METAR ");
+    strcat(metar, icao);
+    strcat(metar, " ");
+    DateTime now = rtc.now();
+    char buf[8];
+    strcat(metar, zeroPad(utoa(now.day(), buf, 10), 2));
+    strcat(metar, zeroPad(utoa(now.hour(), buf, 10), 2));
+    strcat(metar, zeroPad(utoa(now.minute(), buf, 10), 2));
+    strcat(metar, "   ");
+    if (windAvg < 1) {
+      strcat(metar, "00000KT ");
+    } else {
+      if (windAvg < 100) {
+        strcat(metar, zeroPad(utoa(windAvg, buf, 10), 2));
+      } else {
+        strcat(metar, zeroPad(utoa(windAvg, buf, 10), 3));
+      }
       if ((windGust - windAvg) > 2) {
         strcat(metar, "G");
-        strcat(metar, utoa(windGust, buf, 10));
+        if (windGust < 100) {
+          strcat(metar, zeroPad(utoa(windGust, buf, 10), 2));
+        } else {
+          strcat(metar, zeroPad(utoa(windGust, buf, 10), 3));
+        }
       }
       strcat(metar, "KT ");
-      strcat(metar, utoa(temp, buf, 10));
-      strcat(metar, "/");
-      strcat(metar, utoa(dewpoint, buf, 10));
-      strcat(metar, " Q");
-      strcat(metar, utoa(baro, buf, 10));
     }
+    strcat(metar, utoa(temp, buf, 10));
+    strcat(metar, "/");
+    strcat(metar, utoa(dewpoint, buf, 10));
+    strcat(metar, " Q");
+    strcat(metar, utoa(baro, buf, 10));
 }
 
 boolean buttonPressed(boolean &state, int pin) {
@@ -521,16 +499,17 @@ void doMinuteIncrement() {
 
 void doPrintTimestamp() {
   DateTime now = rtc.now();
+  char buf[8];
   lcd.setCursor(2,2);
-  lcd.print(now.day());
+  lcd.print(zeroPad(utoa(now.day(), buf, 10), 2));
   lcd.print('/');
-  lcd.print(now.month());
+  lcd.print(zeroPad(utoa(now.month(), buf, 10), 2));
   lcd.print('/');
-  lcd.print(now.year());
+  lcd.print(zeroPad(utoa(now.year(), buf, 10), 4));
   lcd.print(' ');
-  lcd.print(now.hour());
+  lcd.print(zeroPad(utoa(now.hour(), buf, 10), 2));
   lcd.print(':');
-  lcd.print(now.minute());
+  lcd.print(zeroPad(utoa(now.minute(), buf, 10), 2));
 }
 
 short getDayNumber() {
@@ -567,24 +546,25 @@ double getDaylightTime(float lat) {
   return td;
 }
 
-String doTransformDecimal2Degree(float coord, int &c_deg, int &c_min, int &c_sec) {
+char* doTransformDecimal2Degree(char* result, float coord, int &c_deg, int &c_min, int &c_sec) {
   c_deg = round(trunc(coord));
   coord = abs((coord - trunc(coord))) * 60;
   c_min = round(trunc(coord));
   coord = (coord - trunc(coord));
   c_sec = round(trunc(coord * 60));
-  String result = "";
+  memset(result, '\0', 15);
   if (c_deg < 0) {
-    result = "-";
+    strcat(result, "-");
   } else {
-    result = "+"; 
+    strcat(result, "+"); 
   }
-  result += numPad(abs(c_deg), 3);
-  result += " ";
-  result += numPad(c_min, 2);
-  result += "'";
-  result += numPad(c_sec, 2);
-  result += "\"";
+  char buf[10];
+  strcat(result, zeroPad(itoa(abs(c_deg), buf, 10), 3));
+  strcat(result, " ");
+  strcat(result, zeroPad(itoa(c_min, buf, 10), 2));
+  strcat(result, "'");
+  strcat(result, zeroPad(itoa(c_sec, buf, 10), 2));
+  strcat(result, "\"");
   return result;
 }
 
@@ -598,13 +578,6 @@ float doTransformDegree2Decimal(int c_deg, int c_min, int c_sec) {
 }
 
 void loop() {
-  
-  //if (gsmSerial.available()) {
-  //  Serial.write(gsmSerial.read());
-  //}
-  //if (Serial.available()) {
-  //  gsmSerial.write(Serial.read()); 
-  //}
   
   if (humidityMetro.check()) {
     humidity = getHumidity();
@@ -763,6 +736,7 @@ void loop() {
           typelimit = 180;
         }
         int subtypeoffset[3] = {2, 6, 9};
+        char buf[15] = "";
         for (int subtype = 0; subtype < 3; subtype++) {
           while (!buttonPressed(buttonMode, BUTTON_MODE_PIN)) {
             lcd.setCursor(subtypeoffset[subtype], 3);
@@ -775,7 +749,7 @@ void loop() {
             if (type == 0) {
               coord = latitude;
             }
-            lcd.print(doTransformDecimal2Degree(coord, gps_deg, gps_min, gps_sec));
+            lcd.print(doTransformDecimal2Degree(buf, coord, gps_deg, gps_min, gps_sec));
             if (buttonPressed(buttonAction, BUTTON_ACTION_PIN)) {
               switch (subtype) {
                 case 0:
@@ -845,6 +819,14 @@ void loop() {
     renderMetar(temp, dewpoint, humidity, baro, lux);
     lcd.home();
     imprimeMetar();
+  }
+  
+  if (aliveMetro.check()) {
+    lcd.setCursor(0, 3);
+    lcd.print(".");
+    delay(500);
+    lcd.setCursor(0, 3);
+    lcd.print(" ");
   }
   
   if (publishMetro.check()) {
