@@ -1,7 +1,7 @@
 /*
 
-  METAR (VOO SEGURO) - Version 1.0
-  Developed by Alexandre Lehmann Holzhey in 2014
+  METAR (VOO SEGURO)
+  by Alexandre Lehmann Holzhey
   
 */
 
@@ -14,7 +14,7 @@
 #include <LiquidCrystal_I2C.h>
 #include <Metro.h>
 #include <EEPROM.h>
-//#include <Math.h>
+#include <Math.h>
 
 #define DHTPIN 7                                    // Humidity sensor digital in
 #define DHTTYPE DHT22                               // Humidity sensor type
@@ -26,11 +26,7 @@
 #define GPRS_MODULE_RX_PIN 9                        // GPRS module RX digital out
 #define GPRS_MODULE_TX_PIN 8                        // GPRS module TX digital out
 #define I2C_LCD_ADDRESS 0x27                        // I2C LCD address
-#define TIMER_HUMIDITY 20000                        // Humidity read interval
-#define TIMER_ALIVE 10000                           // Alive indicator interval
-#define TIMER_BARO 21010                            // Pressure read interval
-#define TIMER_TEMP 22030                            // Temperature read interval
-#define TIMER_DEWPOINT 23070                        // Dewpoint calculation interval
+#define TIMER_SENSORS 10000                         // Sensors read interval
 #define TIMER_LUX 2000                              // Luminosity read interval
 #define TIMER_COVER 66000                           // Clouds cover calculation interval
 #define LUX_SAMPLES (TIMER_COVER / TIMER_LUX)       // Maximum samples for luminosity history
@@ -38,7 +34,6 @@
 #define TIMER_PUBLISH 30000                         // Server publish interval
 #define TIMER_ANEMOMETER 6000                       // Instant wind calculation interval
 #define TIMER_WINDS 65000                           // Wind gust and average reset interval
-#define TIMER_BUTTON_MODE 100                       // Mode button reading interval
 #define DELAY_ANEMOMETER_LOW 50                     // Anemometer interrupt on low delay time
 #define DELAY_ANEMOMETER_HIGH 20                    // Anemometer interrupt on high delay time
 #define STS_OK 0                                    // Status OK for readings
@@ -51,50 +46,36 @@
 
 boolean buttonAction = false;                       // Flag used for action button control
 boolean buttonMode = false;                         // Flag used for mode button control
-Metro buttonModeMetro = Metro(TIMER_BUTTON_MODE);   // Initialize mode button Metro
 
 RTC_DS1307 rtc;                                     // Initialize RTC clock library
 DHT dht(DHTPIN, DHTTYPE);                           // Initialize humidity sensor library
 BMP085 dps = BMP085();                              // Initialize pressure and temperature sensor library
 LiquidCrystal_I2C lcd(I2C_LCD_ADDRESS, 20, 4);      // Initialize I2C LCD library
-
-Metro aliveMetro = Metro(TIMER_ALIVE);             // Initialize alive indicator Metro
-
 SoftwareSerial gsmSerial(GPRS_MODULE_RX_PIN, GPRS_MODULE_TX_PIN); // Initialize GPRS software gsmSerial
 
+Metro sensorsMetro = Metro(TIMER_SENSORS);
 Metro metarMetro = Metro(TIMER_METAR);
-char metar[STR_METAR_SIZE] = "";
-
-float humidity = 0;
-Metro humidityMetro = Metro(TIMER_HUMIDITY);
-
-long baro = 0;
-Metro baroMetro = Metro(TIMER_BARO);
-
-long temp = 0;
-Metro tempMetro = Metro(TIMER_TEMP);
-
 Metro publishMetro = Metro(TIMER_PUBLISH);
+Metro anemometerMetro = Metro(TIMER_ANEMOMETER);
+Metro windsMetro = Metro(TIMER_WINDS);
+Metro luxMetro = Metro(TIMER_LUX);
+Metro coverMetro = Metro(TIMER_COVER);
 
+char metar[STR_METAR_SIZE] = "";
+float humidity = 0;
+long baro = 0;
+long temp = 0;
 long dewpoint = 0;
-Metro dewpointMetro = Metro(TIMER_DEWPOINT);
-
 unsigned int windSpeed = 0;
 unsigned int windAvg = 0;
 boolean windAvgFirst = true;
 unsigned int windGust = 0;
-Metro anemometerMetro = Metro(TIMER_ANEMOMETER);
-Metro windsMetro = Metro(TIMER_WINDS);
-
 unsigned int anemometerRevolutions= 0;
 unsigned long anemometerLastRead = 0;
 unsigned long anemometerInterruptLast = 0;
 int anemometerState = LOW;
-
 unsigned int lux = 0;
 byte cover = 0;
-Metro luxMetro = Metro(TIMER_LUX);
-Metro coverMetro = Metro(TIMER_COVER);
 struct samples {
   unsigned int maxLux;
   unsigned int minLux;
@@ -104,22 +85,88 @@ struct samples {
 };
 typedef struct samples LuxSamples;
 LuxSamples luxSamples;
-
 int status = STS_OK;
 char icao[5] = "SBXX";
-
 float latitude = 0;
 float longitude = 0;
 int gps_deg = 0;
 int gps_min = 0;
 int gps_sec = 0;
 
-unsigned int getSpeedFromRevolutions(unsigned int revolutions, unsigned int elapsedms) {
-  //return (((revolutions * anemometerUnit) / 100 ) / (elapsedms / 1000)) * 1.943844;
-  float rpm = (revolutions * 60 )/ (elapsedms /1000);
-  return (rpm * 0.03);
+void setup() {
+  lcd.begin(20, 4);
+  lcd.init();
+  lcd.clear();
+  lcd.print("Voo Seguro 0.5");
+  lcd.setCursor(0, 1);
+  lcd.print("Inicializando...");
+  delay(3000);
+  pinMode(GPRS_MODULE_POWER_PIN, OUTPUT);
+  gsmSerial.begin(19200);
+  Serial.begin(19200);
+  power_on();
+  pinMode(BUTTON_MODE_PIN, INPUT);
+  pinMode(BUTTON_ACTION_PIN, INPUT);
+  pinMode(ANEMOMETER_ACTION_LED, OUTPUT);
+  Wire.begin();
+  Configure_BH1750();
+  rtc.begin();
+  if (!rtc.isrunning()) {
+    rtc.adjust(DateTime(__DATE__, __TIME__));
+  } 
+  for (int c = 0; c < 4; c++) {
+    char ic = EEPROM.read(MEMORY_ICAO + c);
+    if (ic >= 65 and ic <= 90) {
+      icao[c] = ic;
+    }
+  }
+  
+  // Restaura gps
+  for (int type = 0; type < 2; type++) {
+    int address = MEMORY_LAT;
+    float limit = 90;
+    if (type == 1) {
+      address = MEMORY_LNG;
+      limit = 180;
+    }
+    float coord = doTransformDegree2Decimal(EEPROM.read(address++), EEPROM.read(address++), EEPROM.read(address));
+    if ((coord < -limit) || (coord > limit)) {
+      coord = 0;
+    }
+    if (type == 0) {
+      latitude = coord;
+    } else {
+      longitude = coord;
+    }                
+  }
+  
+  dht.begin();
+  dps.init();
+  attachInterrupt(0, anemometerInterrupt, CHANGE);
+  anemometerLastRead = millis();
+  anemometerInterruptLast = millis();
+  anemometerRevolutions = 0;  
+  windSpeed = 0;
+  windAvg = 0;
+  windAvgFirst = true;
+  windGust = 0;
+  luxSamples.maxLux = 0;
+  luxSamples.minLux = 99999;
+  luxSamples.avgLux = 0;
+  luxSamples.samples = 0;
+  lcd.clear();
+  for (byte x = 0; x < 80; x++) {
+    lcd.print('#');
+  }
+  delay(2000);
+  lcd.clear();
 }
 
+
+unsigned int getSpeedFromRevolutions(unsigned int revolutions, unsigned int elapsedms) {
+  float rpm = (revolutions * 60 ) / (elapsedms /1000);
+  return (unsigned int) (rpm * 0.03);
+}
 
 int8_t sendATcommand(char* ATcommand, char* expected_answer1, unsigned int timeout) {
     uint8_t x=0,  answer=0;
@@ -229,74 +276,6 @@ unsigned int getTemp() {
 
 unsigned int getDewPoint(long temperature, float humidity) {
   return (temperature - ((100 - humidity) / 5));
-}
-
-void setup() {
-  lcd.begin(20, 4);
-  lcd.init();
-  lcd.clear();
-  lcd.print("Voo Seguro 0.5");
-  lcd.setCursor(0, 1);
-  lcd.print("Inicializando...");
-  delay(3000);
-  pinMode(GPRS_MODULE_POWER_PIN, OUTPUT);
-  gsmSerial.begin(19200);
-  power_on();
-  pinMode(BUTTON_MODE_PIN, INPUT);
-  pinMode(BUTTON_ACTION_PIN, INPUT);
-  pinMode(ANEMOMETER_ACTION_LED, OUTPUT);
-  Wire.begin();
-  Configure_BH1750();
-  rtc.begin();
-  if (!rtc.isrunning()) {
-    rtc.adjust(DateTime(__DATE__, __TIME__));
-  } 
-  for (int c = 0; c < 4; c++) {
-    char ic = EEPROM.read(MEMORY_ICAO + c);
-    if (ic >= 65 and ic <= 90) {
-      icao[c] = ic;
-    }
-  }
-  
-  // Restaura gps
-  for (int type = 0; type < 2; type++) {
-    int address = MEMORY_LAT;
-    float limit = 90;
-    if (type == 1) {
-      address = MEMORY_LNG;
-      limit = 180;
-    }
-    float coord = doTransformDegree2Decimal(EEPROM.read(address++), EEPROM.read(address++), EEPROM.read(address));
-    if ((coord < -limit) || (coord > limit)) {
-      coord = 0;
-    }
-    if (type == 0) {
-      latitude = coord;
-    } else {
-      longitude = coord;
-    }                
-  }
-  
-  dht.begin();
-  dps.init();
-  attachInterrupt(0, anemometerInterrupt, CHANGE);
-  anemometerLastRead = millis();
-  anemometerInterruptLast = millis();
-  anemometerRevolutions = 0;  
-  windSpeed = 0;
-  windAvg = 0;
-  windAvgFirst = true;
-  windGust = 0;
-  luxSamples.maxLux = 0;
-  luxSamples.minLux = 99999;
-  luxSamples.avgLux = 0;
-  luxSamples.samples = 0;
-  lcd.clear();
-  for (byte x = 0; x < 80; x++) {
-    lcd.print('#');
-  }
-  delay(2000);
-  lcd.clear();
 }
 
 void gsmHttp() {
@@ -460,7 +439,7 @@ char* zeroPad(char* subject, byte sz) {
   return subject;
 }
 
-void renderMetar(long temp, long dewpoint, float humidity, long baro, unsigned int lux) {
+void renderMetar() {
     memset(metar, '\0', STR_METAR_SIZE);
     strcat(metar, "METAR ");
     strcat(metar, icao);
@@ -621,20 +600,12 @@ float doTransformDegree2Decimal(int c_deg, int c_min, int c_sec) {
 
 void loop() {
   
-  if (humidityMetro.check()) {
+  if (sensorsMetro.check()) {
     humidity = getHumidity();
-  }
-  
-  if (baroMetro.check()) {
     baro = getBaro();
-  }
-  
-  if (tempMetro.check()) {
     temp = getTemp();
-  }
-  
-  if (dewpointMetro.check()) {
     dewpoint = getDewPoint(temp, humidity);
+    sensorsMetro.reset();
   }
   
   if (luxMetro.check()) {
@@ -652,6 +623,7 @@ void loop() {
     }
     luxSamples.history[luxSamples.samples] = lux;
     luxSamples.samples++;
+    luxMetro.reset();
   }
   
   if (coverMetro.check()) {
@@ -666,6 +638,7 @@ void loop() {
     luxSamples.minLux = 99999;
     luxSamples.avgLux = 0;
     luxSamples.samples = 0;
+    coverMetro.reset();
   }
   
   if (anemometerMetro.check()) {
@@ -678,161 +651,162 @@ void loop() {
       windAvg = windSpeed;
       windAvgFirst = false;
     } else {
-      windAvg = (windAvg + windSpeed) / 2;
+      windAvg = (unsigned int) ((windAvg + windSpeed) / 2);
     }
     if (windSpeed > windGust) {
       windGust = windSpeed;
     }
+    anemometerMetro.reset();
   }
   
   if (windsMetro.check()) {
     windAvg = 0;
     windGust = 0;
     windAvgFirst = true;
+    windsMetro.reset();
   }
   
-  if (buttonModeMetro.check()) {
-    if (buttonPressed(buttonMode, BUTTON_MODE_PIN)) {
-      lcd.clear();
-      lcd.print("Config 1/7 : Dia");
-      lcd.setCursor(2, 3);
-      lcd.print("vv");
+  if (buttonPressed(buttonMode, BUTTON_MODE_PIN)) {
+    lcd.clear();
+    lcd.print("Config 1/7 : Dia");
+    lcd.setCursor(2, 3);
+    lcd.print("vv");
+    while (!buttonPressed(buttonMode, BUTTON_MODE_PIN)) {
+      doPrintTimestamp();
+      if (buttonPressed(buttonAction, BUTTON_ACTION_PIN)) {
+        doDayIncrement();
+      }
+    }
+    lcd.clear();
+    lcd.print("Config 2/7 : Mes");
+    lcd.setCursor(5, 3);
+    lcd.print("vv");
+    while (!buttonPressed(buttonMode, BUTTON_MODE_PIN)) {
+      doPrintTimestamp();
+      if (buttonPressed(buttonAction, BUTTON_ACTION_PIN)) {
+        doMonthIncrement();
+      }
+    }
+    lcd.clear();
+    lcd.print("Config 3/7 : Ano");
+    lcd.setCursor(8, 3);
+    lcd.print("vvvv");
+    while (!buttonPressed(buttonMode, BUTTON_MODE_PIN)) {
+      doPrintTimestamp();
+      if (buttonPressed(buttonAction, BUTTON_ACTION_PIN)) {
+        doYearIncrement();
+      }
+    }
+    lcd.clear();
+    lcd.print("Config 4/7 : Hora");
+    lcd.setCursor(13, 3);
+    lcd.print("vv");
+    while (!buttonPressed(buttonMode, BUTTON_MODE_PIN)) {
+      doPrintTimestamp();
+      if (buttonPressed(buttonAction, BUTTON_ACTION_PIN)) {
+        doHourIncrement();
+      }
+    }
+    lcd.clear();
+    lcd.print("Config 5/7 : Minuto");
+    lcd.setCursor(16, 3);
+    lcd.print("vv");
+    while (!buttonPressed(buttonMode, BUTTON_MODE_PIN)) {
+      doPrintTimestamp();
+      if (buttonPressed(buttonAction, BUTTON_ACTION_PIN)) {
+        doMinuteIncrement();
+      }
+    }
+    lcd.clear();
+    lcd.print("Config 6/7 : ICAO");
+    for (int c = 0; c < 4; c++) {
+      lcd.setCursor(4 + c, 3);
+      lcd.print(" v");
       while (!buttonPressed(buttonMode, BUTTON_MODE_PIN)) {
-        doPrintTimestamp();
+        lcd.setCursor(5, 2);
+        lcd.print(icao);
         if (buttonPressed(buttonAction, BUTTON_ACTION_PIN)) {
-          doDayIncrement();
+          if (++icao[c] > 90) {
+            icao[c] = 65;
+          }
         }
       }
-      lcd.clear();
-      lcd.print("Config 2/7 : Mes");
-      lcd.setCursor(5, 3);
-      lcd.print("vv");
-      while (!buttonPressed(buttonMode, BUTTON_MODE_PIN)) {
-        doPrintTimestamp();
-        if (buttonPressed(buttonAction, BUTTON_ACTION_PIN)) {
-          doMonthIncrement();
-        }
+      EEPROM.write(MEMORY_ICAO + c, icao[c]);
+    }
+    lcd.clear();
+    lcd.print("Config 7/7 : GPS");
+    int typelimit = 90;
+    float coord = 0;
+    for (int type = 0; type < 2; type++) {
+      lcd.setCursor(1, 2);
+      if (type == 0) {
+        lcd.print("Lat ");
+      } else {
+        lcd.print("Lng ");
+        typelimit = 180;
       }
-      lcd.clear();
-      lcd.print("Config 3/7 : Ano");
-      lcd.setCursor(8, 3);
-      lcd.print("vvvv");
-      while (!buttonPressed(buttonMode, BUTTON_MODE_PIN)) {
-        doPrintTimestamp();
-        if (buttonPressed(buttonAction, BUTTON_ACTION_PIN)) {
-          doYearIncrement();
-        }
-      }
-      lcd.clear();
-      lcd.print("Config 4/7 : Hora");
-      lcd.setCursor(13, 3);
-      lcd.print("vv");
-      while (!buttonPressed(buttonMode, BUTTON_MODE_PIN)) {
-        doPrintTimestamp();
-        if (buttonPressed(buttonAction, BUTTON_ACTION_PIN)) {
-          doHourIncrement();
-        }
-      }
-      lcd.clear();
-      lcd.print("Config 5/7 : Minuto");
-      lcd.setCursor(16, 3);
-      lcd.print("vv");
-      while (!buttonPressed(buttonMode, BUTTON_MODE_PIN)) {
-        doPrintTimestamp();
-        if (buttonPressed(buttonAction, BUTTON_ACTION_PIN)) {
-          doMinuteIncrement();
-        }
-      }
-      lcd.clear();
-      lcd.print("Config 6/7 : ICAO");
-      for (int c = 0; c < 4; c++) {
-        lcd.setCursor(4 + c, 3);
-        lcd.print(" v");
+      int subtypeoffset[3] = {2, 6, 9};
+      char buf[15] = "";
+      for (int subtype = 0; subtype < 3; subtype++) {
         while (!buttonPressed(buttonMode, BUTTON_MODE_PIN)) {
+          lcd.setCursor(subtypeoffset[subtype], 3);
+          lcd.print("    vvv");
+          for (int f = 1; f < (10 - subtypeoffset[subtype]); f++) {
+            lcd.print(' ');  
+          }
           lcd.setCursor(5, 2);
-          lcd.print(icao);
+          coord = longitude;
+          if (type == 0) {
+            coord = latitude;
+          }
+          lcd.print(doTransformDecimal2Degree(buf, coord, gps_deg, gps_min, gps_sec));
           if (buttonPressed(buttonAction, BUTTON_ACTION_PIN)) {
-            if (++icao[c] > 90) {
-              icao[c] = 65;
+            switch (subtype) {
+              case 0:
+                gps_deg++;
+                if (gps_deg > typelimit) {
+                  gps_deg = -typelimit;
+                }
+                break;
+              case 1:
+                gps_min++;
+                gps_min %= 60;
+                break;
+              case 2:
+                gps_sec++;
+                gps_sec %= 60;
+                break;
             }
-          }
-        }
-        EEPROM.write(MEMORY_ICAO + c, icao[c]);
-      }
-      lcd.clear();
-      lcd.print("Config 7/7 : GPS");
-      int typelimit = 90;
-      float coord = 0;
-      for (int type = 0; type < 2; type++) {
-        lcd.setCursor(1, 2);
-        if (type == 0) {
-          lcd.print("Lat ");
-        } else {
-          lcd.print("Lng ");
-          typelimit = 180;
-        }
-        int subtypeoffset[3] = {2, 6, 9};
-        char buf[15] = "";
-        for (int subtype = 0; subtype < 3; subtype++) {
-          while (!buttonPressed(buttonMode, BUTTON_MODE_PIN)) {
-            lcd.setCursor(subtypeoffset[subtype], 3);
-            lcd.print("    vvv");
-            for (int f = 1; f < (10 - subtypeoffset[subtype]); f++) {
-              lcd.print(" ");  
-            }
-            lcd.setCursor(5, 2);
-            coord = longitude;
+            coord = doTransformDegree2Decimal(gps_deg, gps_min, gps_sec);
             if (type == 0) {
-              coord = latitude;
-            }
-            lcd.print(doTransformDecimal2Degree(buf, coord, gps_deg, gps_min, gps_sec));
-            if (buttonPressed(buttonAction, BUTTON_ACTION_PIN)) {
-              switch (subtype) {
-                case 0:
-                  gps_deg++;
-                  if (gps_deg > typelimit) {
-                    gps_deg = -typelimit;
-                  }
-                  break;
-                case 1:
-                  gps_min++;
-                  gps_min %= 60;
-                  break;
-                case 2:
-                  gps_sec++;
-                  gps_sec %= 60;
-                  break;
-              }
-              coord = doTransformDegree2Decimal(gps_deg, gps_min, gps_sec);
-              if (type == 0) {
-                latitude = coord;
-              } else {
-                longitude = coord;
-              }                
-            }
+              latitude = coord;
+            } else {
+              longitude = coord;
+            }                
           }
-        }
-        int address = MEMORY_LAT;
-        int value = 0;
-        if (type == 1) {
-          address = MEMORY_LNG;
-        }
-        for (int offset = 0; offset < 3; offset++) {
-          switch (offset) {
-            case 0:
-              value = gps_deg;
-              break;
-            case 1:
-              value = gps_min;
-              break;
-            case 2:
-              value = gps_sec;
-              break;
-          }
-          EEPROM.write(address + offset, value);
         }
       }
-      lcd.clear();
+      int address = MEMORY_LAT;
+      int value = 0;
+      if (type == 1) {
+        address = MEMORY_LNG;
+      }
+      for (int offset = 0; offset < 3; offset++) {
+        switch (offset) {
+          case 0:
+            value = gps_deg;
+            break;
+          case 1:
+            value = gps_min;
+            break;
+          case 2:
+            value = gps_sec;
+            break;
+        }
+        EEPROM.write(address + offset, value);
+      }
+    }
+    lcd.clear();
 //      lcd.print("Status");
 //      lcd.setCursor(2, 2);
 //      lcd.print("Daylight = ");
@@ -848,25 +822,18 @@ void loop() {
 //        }
 //      }
 //      lcd.clear();
-    }
   }
   
   if ((metarMetro.check()) && (status == STS_OK)) {
-    renderMetar(temp, dewpoint, humidity, baro, lux);
+    renderMetar();
     lcd.home();
     imprimeMetar();
+    metarMetro.reset();
   }
-  
-  if (aliveMetro.check()) {
-    lcd.setCursor(0, 3);
-    lcd.print(".");
-    delay(500);
-    lcd.setCursor(0, 3);
-    lcd.print(" ");
-  }
-  
+    
   if (publishMetro.check()) {
     gsmHttp();
+    publishMetro.reset();
   }
 
 }
