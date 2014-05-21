@@ -14,7 +14,7 @@
 #include <LiquidCrystal_I2C.h>
 #include <Metro.h>
 #include <EEPROM.h>
-#include <Math.h>
+//#include <Math.h>
 
 #define DHTPIN 7                                    // Humidity sensor digital in
 #define DHTTYPE DHT22                               // Humidity sensor type
@@ -27,7 +27,7 @@
 #define GPRS_MODULE_TX_PIN 8                        // GPRS module TX digital out
 #define I2C_LCD_ADDRESS 0x27                        // I2C LCD address
 #define TIMER_HUMIDITY 20000                        // Humidity read interval
-#define TIMER_ALIVE 10000                            // Alive indicator interval
+#define TIMER_ALIVE 10000                           // Alive indicator interval
 #define TIMER_BARO 21010                            // Pressure read interval
 #define TIMER_TEMP 22030                            // Temperature read interval
 #define TIMER_DEWPOINT 23070                        // Dewpoint calculation interval
@@ -35,7 +35,7 @@
 #define TIMER_COVER 66000                           // Clouds cover calculation interval
 #define LUX_SAMPLES (TIMER_COVER / TIMER_LUX)       // Maximum samples for luminosity history
 #define TIMER_METAR 3000                            // Metar rendering interval
-#define TIMER_PUBLISH (01 * 60000)                  // Server publish interval
+#define TIMER_PUBLISH 30000                         // Server publish interval
 #define TIMER_ANEMOMETER 6000                       // Instant wind calculation interval
 #define TIMER_WINDS 65000                           // Wind gust and average reset interval
 #define TIMER_BUTTON_MODE 100                       // Mode button reading interval
@@ -60,7 +60,7 @@ LiquidCrystal_I2C lcd(I2C_LCD_ADDRESS, 20, 4);      // Initialize I2C LCD librar
 
 Metro aliveMetro = Metro(TIMER_ALIVE);             // Initialize alive indicator Metro
 
-SoftwareSerial gsmSerial(GPRS_MODULE_RX_PIN, GPRS_MODULE_TX_PIN); // Initialize GPRS software serial
+SoftwareSerial gsmSerial(GPRS_MODULE_RX_PIN, GPRS_MODULE_TX_PIN); // Initialize GPRS software gsmSerial
 
 Metro metarMetro = Metro(TIMER_METAR);
 char metar[STR_METAR_SIZE] = "";
@@ -127,13 +127,13 @@ int8_t sendATcommand(char* ATcommand, char* expected_answer1, unsigned int timeo
     unsigned long previous;
     memset(response, '\0', 100);
     delay(100);
-    while( gsmSerial.available() > 0) gsmSerial.read();
-    gsmSerial.println(ATcommand);
+    while( gsmSerial.available() > 0)  gsmSerial.read();
+     gsmSerial.println(ATcommand);
     x = 0;
     previous = millis();
     do{
-        if(gsmSerial.available() != 0){    
-            response[x] = gsmSerial.read();
+        if( gsmSerial.available() != 0){    
+            response[x] =  gsmSerial.read();
             x++;
             if (strstr(response, expected_answer1) != NULL) {
                 answer = 1;
@@ -149,13 +149,13 @@ int8_t sendATcommand2(char* ATcommand, char* expected_answer1, char* expected_an
     unsigned long previous;
     memset(response, '\0', 100);
     delay(100);
-    while( gsmSerial.available() > 0) gsmSerial.read();
-    gsmSerial.println(ATcommand);
+    while(  gsmSerial.available() > 0)  gsmSerial.read();
+     gsmSerial.println(ATcommand);
     x = 0;
     previous = millis();
     do{        
-        if(gsmSerial.available() != 0){    
-            response[x] = gsmSerial.read();
+        if( gsmSerial.available() != 0){    
+            response[x] =  gsmSerial.read();
             x++;
             if (strstr(response, expected_answer1) != NULL) {
                 answer = 1;
@@ -239,7 +239,6 @@ void setup() {
   lcd.setCursor(0, 1);
   lcd.print("Inicializando...");
   delay(3000);
-  Serial.begin(19200);
   pinMode(GPRS_MODULE_POWER_PIN, OUTPUT);
   gsmSerial.begin(19200);
   power_on();
@@ -301,49 +300,99 @@ void setup() {
 }
 
 void gsmHttp() {
+  
+  // Read network registration status
+  // CREG returns <N>,<STAT>
+  // <N> is code presentation, always 0
+  // <STAT> is registration status (1 is registered no roaming and 5 is registered with roaming)
+  
   if (sendATcommand2("AT+CREG?", "+CREG: 0,1", "+CREG: 0,5", 2000) == 0) {
     lcd.setCursor(0, 3);
     lcd.print(" (Offline)");
   } else {
     lcd.setCursor(0, 3);
     lcd.print("(Enviando)");
+    
+    // Get signal quality report
+    // CSQ returns ERROR when no signal from GSM
+    
     sendATcommand("AT+CSQ", "OK", 5000);
-    sendATcommand("AT+CGATT?", "OK", 5000);
+    
+    // Attach from GPRS device
+    // Will return ERROR if GPRS module is fault
+    
+    sendATcommand("AT+CGATT=1", "OK", 5000);
+    
+    // Set bearer settings for applications based on IP
+    // 3,1 is "set bearer parameters" for profile 1
+    // The parameter is "CONTYPE" and the value is "GPRS"
+    // Sim 900 supports "CSD" and "GPRS" for "CONTYPE"
+    
     sendATcommand("AT+SAPBR=3,1,\"CONTYPE\",\"GPRS\"", "OK", 5000);
-    sendATcommand("AT+SAPBR=3,1,\"APN\",\"VIVO\"", "OK", 5000);
+    
+    // Set another bearer setting
+    // "APN" is "VIVO"
+    
+    sendATcommand("AT+SAPBR=3,1,\"APN\",\"Vivo Internet\"", "OK", 5000);
+
+    // Open bearer for profile 1 (1 = open, 1 = profile)
+
     sendATcommand("AT+SAPBR=1,1", "OK", 5000);
+    
+    // Initialize HTTP service
+    
     sendATcommand("AT+HTTPINIT", "OK", 5000);
 //    sendATcommand("AT+HTTPPARA=\"URL\",\"http://weatherstation.wunderground.com/weatherstation/updateweatherstation.php?action=updateraw&ID=IRIOGRAN45&password=sal24816&dateutc=2014-05-10+19%3A00%3A00&humidity=33&tempf=60\"", "OK", 5000);
-    sendATcommand("AT+HTTPPARA=\"URL\",\"http://bool.eti.br/metar.php?metar=teste\"", "OK", 5000);
-//    char url[60 + STR_METAR_SIZE_ENCODED] = "AT+HTTPPARA=\"URL\",\"http://bool.eti.br/metar.php?metar=";
-//    char encMetar[STR_METAR_SIZE_ENCODED];
-//    memset(encMetar, '\0', STR_METAR_SIZE_ENCODED);
-//    byte y = 0;
-//    for (byte x = 0; x < strlen(metar); x++) {
-//      switch (metar[x]) {
-//        case 32: // %20
-//          encMetar[y++] = 37;
-//          encMetar[y++] = 50;
-//          encMetar[y++] = 48;
-//          break;
-//        case 47: // %2F
-//          encMetar[y++] = 37;
-//          encMetar[y++] = 50;
-//          encMetar[y++] = 70;
-//          break;
-//        default:
-//          encMetar[y++] = metar[x];
-//          break;
-//      }
-//    }
-//    encMetar[y] = 0;
-//    strcat(url, encMetar);
-//    strcat(url, "\"");
-//    sendATcommand(url, "OK", 5000);
+//    sendATcommand("AT+HTTPPARA=\"URL\",\"http://bool.eti.br/metar.php?metar=teste\"", "OK", 5000);
+
+    char url[60 + STR_METAR_SIZE_ENCODED] = "AT+HTTPPARA=\"URL\",\"http://bool.eti.br/metar.php?metar=";
+    char encMetar[STR_METAR_SIZE_ENCODED];
+    memset(encMetar, '\0', STR_METAR_SIZE_ENCODED);
+    byte y = 0;
+    for (byte x = 0; x < strlen(metar); x++) {
+      switch (metar[x]) {
+        case 32: // %20
+          encMetar[y++] = 37;
+          encMetar[y++] = 50;
+          encMetar[y++] = 48;
+          break;
+        case 47: // %2F
+          encMetar[y++] = 37;
+          encMetar[y++] = 50;
+          encMetar[y++] = 70;
+          break;
+        default:
+          encMetar[y++] = metar[x];
+          break;
+      }
+    }
+    encMetar[y] = 0;
+    strcat(url, encMetar);
+    strcat(url, "\"");
+    sendATcommand(url, "OK", 5000);
+
+    // Do HTTP action (0 = GET, 1 = POST and 2 = HEAD)
+
     sendATcommand("AT+HTTPACTION=0", "OK", 15000);
-    //gsmSerial.println("AT+HTTPREAD");
-    //delay(1000);
-    //ShowSerialData();
+    
+    // Read response data
+    
+    gsmSerial.println("AT+HTTPREAD");
+    delay(2000);
+    while(gsmSerial.available() > 0)  gsmSerial.read();
+    
+    // Terminate HTTP service
+    
+    sendATcommand("AT+HTTPTERM", "OK", 5000);
+    
+    // Open bearer for profile 1 (0 = close, 1 = profile)
+
+    sendATcommand("AT+SAPBR=0,1", "OK", 5000);
+    
+    // Detach GPRS device
+    
+    sendATcommand("AT+CGATT=0", "OK", 5000);
+       
     lcd.setCursor(0, 3);
     for (byte x = 0; x < 20; x++) {
       lcd.print(' ');
@@ -534,15 +583,8 @@ short getDayNumber() {
 
 double getDaylightTime(float lat) {
   int yearday = getDayNumber();
-  Serial.println("-----");
-  Serial.println(yearday);
-  Serial.println(lat, 6);
-  Serial.println("-----");
   double d = 23.45 * sin(0.98630137 * (284.0 + yearday));
-  Serial.println(d, 6);
   double td = 0.133333 * acos(-tan(lat) * tan(d));
-  Serial.println(td, 6);
-  Serial.println("-----");
   return td;
 }
 
@@ -614,18 +656,12 @@ void loop() {
   
   if (coverMetro.check()) {
     unsigned int luxDelta = luxSamples.history[0];
-    Serial.println("Cover calculation...");
     for (unsigned int x = 1; x < luxSamples.samples; x++) {
       luxDelta += (luxSamples.history[x] - luxDelta);
-      Serial.print(luxSamples.history[x]);
-      Serial.print(" ");
     }
     luxDelta = luxDelta - luxSamples.history[0];
-    Serial.println(" ");
-    Serial.println(luxDelta);
     unsigned int luxTotalDelta = (luxSamples.maxLux - luxSamples.minLux);
     float luxFactor = luxDelta / luxTotalDelta;
-    Serial.println(luxTotalDelta);
     luxSamples.maxLux = 0;
     luxSamples.minLux = 99999;
     luxSamples.avgLux = 0;
@@ -797,21 +833,21 @@ void loop() {
         }
       }
       lcd.clear();
-      lcd.print("Status");
-      lcd.setCursor(2, 2);
-      lcd.print("Daylight = ");
-      lcd.print(getDaylightTime(latitude), 4);
-      lcd.setCursor(2, 3);
-      lcd.print("Dias = ");
-      lcd.print(getDayNumber());
-      while (!buttonPressed(buttonMode, BUTTON_MODE_PIN)) {
-        lcd.setCursor(2, 4);
-        lcd.print("AneRPM:");
-        lcd.print(anemometerRevolutions);
-        if (buttonPressed(buttonAction, BUTTON_ACTION_PIN)) {
-        }
-      }
-      lcd.clear();
+//      lcd.print("Status");
+//      lcd.setCursor(2, 2);
+//      lcd.print("Daylight = ");
+//      lcd.print(getDaylightTime(latitude), 4);
+//      lcd.setCursor(2, 3);
+//      lcd.print("Dias = ");
+//      lcd.print(getDayNumber());
+//      while (!buttonPressed(buttonMode, BUTTON_MODE_PIN)) {
+//        lcd.setCursor(2, 4);
+//        lcd.print("AneRPM:");
+//        lcd.print(anemometerRevolutions);
+//        if (buttonPressed(buttonAction, BUTTON_ACTION_PIN)) {
+//        }
+//      }
+//      lcd.clear();
     }
   }
   
