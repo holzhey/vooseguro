@@ -53,6 +53,7 @@ BMP085 dps = BMP085();                              // Initialize pressure and t
 LiquidCrystal_I2C lcd(I2C_LCD_ADDRESS, 20, 4);      // Initialize I2C LCD library
 SoftwareSerial gsmSerial(GPRS_MODULE_RX_PIN, GPRS_MODULE_TX_PIN); // Initialize GPRS software gsmSerial
 
+// Metro used for tasks timing
 Metro sensorsMetro = Metro(TIMER_SENSORS);
 Metro metarMetro = Metro(TIMER_METAR);
 Metro publishMetro = Metro(TIMER_PUBLISH);
@@ -61,6 +62,9 @@ Metro windsMetro = Metro(TIMER_WINDS);
 Metro luxMetro = Metro(TIMER_LUX);
 Metro coverMetro = Metro(TIMER_COVER);
 
+// Global vars
+// (i choose to use globals focusing less SRAM usage in function calls due to
+// parameters going to stack)
 char metar[STR_METAR_SIZE] = "";
 float humidity = 0;
 long baro = 0;
@@ -94,6 +98,12 @@ int gps_min = 0;
 int gps_sec = 0;
 
 void setup() {
+  
+  // Serial init
+  // (debug purposes, to be removed - more memory without Software Serial!!)
+  Serial.begin(19200);
+  
+  // LCD I2C init
   lcd.begin(20, 4);
   lcd.init();
   lcd.clear();
@@ -101,19 +111,30 @@ void setup() {
   lcd.setCursor(0, 1);
   lcd.print("Inicializando...");
   delay(3000);
+  
+  // GSM module init
   pinMode(GPRS_MODULE_POWER_PIN, OUTPUT);
   gsmSerial.begin(19200);
-  Serial.begin(19200);
   power_on();
+  
+  // Input/Ouput setup
   pinMode(BUTTON_MODE_PIN, INPUT);
   pinMode(BUTTON_ACTION_PIN, INPUT);
   pinMode(ANEMOMETER_ACTION_LED, OUTPUT);
+  
+  // I2C init
   Wire.begin();
+  
+  // Lux sensor init
   Configure_BH1750();
+  
+  // RTC init and first setup
   rtc.begin();
   if (!rtc.isrunning()) {
     rtc.adjust(DateTime(__DATE__, __TIME__));
   } 
+  
+  // Read ICAO from EEPROM
   for (int c = 0; c < 4; c++) {
     char ic = EEPROM.read(MEMORY_ICAO + c);
     if (ic >= 65 and ic <= 90) {
@@ -121,7 +142,7 @@ void setup() {
     }
   }
   
-  // Restaura gps
+  // Read GPS position from EEPROM
   for (int type = 0; type < 2; type++) {
     int address = MEMORY_LAT;
     float limit = 90;
@@ -140,8 +161,13 @@ void setup() {
     }                
   }
   
+  // Humidity sensor init
   dht.begin();
+  
+  // Pressure and temperature sensor init
   dps.init();
+  
+  // Anemometer setup
   attachInterrupt(0, anemometerInterrupt, CHANGE);
   anemometerLastRead = millis();
   anemometerInterruptLast = millis();
@@ -150,10 +176,14 @@ void setup() {
   windAvg = 0;
   windAvgFirst = true;
   windGust = 0;
+  
+  // Cloud cover setup
   luxSamples.maxLux = 0;
   luxSamples.minLux = 99999;
   luxSamples.avgLux = 0;
   luxSamples.samples = 0;
+  
+  // LCD test pattern
   lcd.clear();
   for (byte x = 0; x < 80; x++) {
     lcd.print('#');
@@ -161,7 +191,6 @@ void setup() {
   delay(2000);
   lcd.clear();
 }
-
 
 unsigned int getSpeedFromRevolutions(unsigned int revolutions, unsigned int elapsedms) {
   float rpm = (revolutions * 60 ) / (elapsedms /1000);
@@ -564,6 +593,7 @@ double getDaylightTime(float lat) {
   int yearday = getDayNumber();
   double d = 23.45 * sin(0.98630137 * (284.0 + yearday));
   double td = 0.133333 * acos(-tan(lat) * tan(d));
+  Serial.println(td);
   return td;
 }
 
@@ -807,28 +837,22 @@ void loop() {
       }
     }
     lcd.clear();
-//      lcd.print("Status");
-//      lcd.setCursor(2, 2);
-//      lcd.print("Daylight = ");
-//      lcd.print(getDaylightTime(latitude), 4);
-//      lcd.setCursor(2, 3);
-//      lcd.print("Dias = ");
-//      lcd.print(getDayNumber());
-//      while (!buttonPressed(buttonMode, BUTTON_MODE_PIN)) {
-//        lcd.setCursor(2, 4);
-//        lcd.print("AneRPM:");
-//        lcd.print(anemometerRevolutions);
-//        if (buttonPressed(buttonAction, BUTTON_ACTION_PIN)) {
-//        }
-//      }
-//      lcd.clear();
+      lcd.print("Status");
+      lcd.setCursor(2, 2);
+      lcd.print("Daylight = ");
+      lcd.print(getDaylightTime(latitude), 4);
+      lcd.setCursor(2, 3);
+      lcd.print("Dias = ");
+      lcd.print(getDayNumber());
+      while (!buttonPressed(buttonMode, BUTTON_MODE_PIN)) {
+      }
+      lcd.clear();
   }
   
   if ((metarMetro.check()) && (status == STS_OK)) {
     renderMetar();
     lcd.home();
     imprimeMetar();
-    metarMetro.reset();
   }
     
   if (publishMetro.check()) {
