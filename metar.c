@@ -121,6 +121,7 @@ Metro coverMetro = Metro(TIMER_COVER);              // Estimate cloud cover task
 // Global vars
 
 char metar[STR_METAR_SIZE] = "";                    // String buffer, used with METAR and URL
+boolean gsmOk;                                      // Flag for GSM modem status (power up)
 float humidity = 0;                                 // Humidity in percent
 long baro = 0;                                      // Barometric pressure in hPa
 long temp = 0;                                      // Temperature in Celsius
@@ -134,6 +135,9 @@ unsigned long anemometerLastRead = 0;               // Last anemometer read mill
 unsigned long anemometerInterruptLast = 0;          // Last anemometer interrupt millis
 int anemometerState = LOW;                          // Anemometer pulse state
 unsigned int lux = 0;                               // Luminosity in Lux
+unsigned int lastLux;
+unsigned long cloudIniTime;
+unsigned int cloudIniLux;
 byte cover = 0;                                     // Cloud cover in percent 
 struct samples {                                    // Struct for luminosity samples
   unsigned int maxLux;                              // Maximum luminosity
@@ -304,6 +308,7 @@ int8_t sendATcommand2(char* ATcommand, char* expected_answer1, char* expected_an
 
 void power_on(){
   uint8_t answer=0;
+  byte attemps = 0;
   answer = sendATcommand(getString(strAT), getString(strOK), 2000);
   while (answer == 0)
   {
@@ -316,6 +321,17 @@ void power_on(){
       ct++;
       if (ct > 5) break;
     }
+    if (answer == 0) {
+      attemps++;
+      if (attemps > 3) {
+        break;
+      }
+    }
+  }
+  if (answer == 0) {
+    gsmOk = false;
+  } else {
+    gsmOk = true;
   }
 }
 
@@ -372,7 +388,7 @@ void gsmHttp() {
   // <N> is code presentation, always 0
   // <STAT> is registration status (1 is registered no roaming and 5 is registered with roaming)
 
-  if (sendATcommand2(getString(strAtReg1), getString(strAtReg2), getString(strAtReg3), 2000) == 0) {
+  if (sendATcommand2(getString(strAtReg1), getString(strAtReg2), getString(strAtReg3), 2000) == 0 || (!gsmOk)) {
     lcd.setCursor(10, 3);
     lcd.print(getString(strOffline));
   } 
@@ -760,17 +776,28 @@ void loop() {
     luxSamples.history[luxSamples.samples] = lux;
     luxSamples.samples++;
     luxMetro.reset();
+    
+    if (lux <= lastLux) {
+      cloudIniTime = millis();
+      
+    }
+    lastLux = lux;
+    
   }
 
   // Clouds cover estimation task
   if (coverMetro.check()) {
-    unsigned int luxDelta = luxSamples.history[0];
+    int luxDelta = 0;
     for (unsigned int x = 1; x < luxSamples.samples; x++) {
-      luxDelta += (luxSamples.history[x] - luxDelta);
+      luxDelta += (luxSamples.history[x] - luxSamples.history[x - 1]);
     }
-    luxDelta = luxDelta - luxSamples.history[0];
-    unsigned int luxTotalDelta = (luxSamples.maxLux - luxSamples.minLux);
-    float luxFactor = luxDelta / luxTotalDelta;
+    int luxTotalDelta = (luxSamples.maxLux - luxSamples.minLux);
+    float luxFactor;
+    if (luxTotalDelta != 0) {
+      luxFactor = luxDelta / luxTotalDelta;
+    } else {
+      luxFactor = 0;
+    }
     luxSamples.maxLux = 0;
     luxSamples.minLux = 99999;
     luxSamples.avgLux = 0;
