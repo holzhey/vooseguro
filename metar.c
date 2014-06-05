@@ -14,6 +14,7 @@
 #include <Metro.h>                                  // Metro timing library
 #include <EEPROM.h>                                 // EEPROM I/O library
 #include <Math.h>                                   // Math functions library
+#include "Timer.h"                                  // Timer function library
 
 #define DHTPIN 7                                    // Humidity sensor digital in
 #define DHTTYPE DHT22                               // Humidity sensor type
@@ -21,6 +22,7 @@
 #define BUTTON_MODE_PIN 5                           // Mode button digital in
 #define BUTTON_ACTION_PIN 4                         // Action button digital in
 #define ANEMOMETER_ACTION_LED 13                    // Anemometer interrupt action led digital out       
+#define WIND_DIRECTION_ANALOG_PIN 0                 // Analog input port for wind direction reading
 #define GPRS_MODULE_POWER_PIN 10                    // GPRS module power on digital out
 #define GPRS_MODULE_RX_PIN 9                        // GPRS module RX digital out
 #define GPRS_MODULE_TX_PIN 8                        // GPRS module TX digital out
@@ -118,6 +120,9 @@ Metro windsMetro = Metro(TIMER_WINDS);              // Calculate winds (speed & 
 Metro luxMetro = Metro(TIMER_LUX);                  // Read luminosity and handle history task
 Metro coverMetro = Metro(TIMER_COVER);              // Estimate cloud cover task
 
+// Timer handlers used for wind direction reading
+Timer winddirTimer;                                 // Read wind direction reading timer interrupt handler
+
 // Global vars
 
 char metar[STR_METAR_SIZE] = "";                    // String buffer, used with METAR and URL
@@ -125,6 +130,7 @@ boolean gsmOk;                                      // Flag for GSM modem status
 float humidity = 0;                                 // Humidity in percent
 long baro = 0;                                      // Barometric pressure in hPa
 long temp = 0;                                      // Temperature in Celsius
+unsigned int windDirection = 0;                     // Wind direction in degrees
 long dewpoint = 0;                                  // Dewpoint in Celsius
 unsigned int windSpeed = 0;                         // Wind speed in knots
 unsigned int windAvg = 0;                           // Wind speed average in knots
@@ -236,6 +242,11 @@ void setup() {
   windAvg = 0;
   windAvgFirst = true;
   windGust = 0;
+  
+  // Wind direction setup
+  pinMode(WIND_DIRECTION_ANALOG_PIN, INPUT);
+  windDirection = 0;
+  //winddirTimer.every(250, windDirRead);
 
   // Cloud cover setup
   luxSamples.maxLux = 0;
@@ -250,6 +261,27 @@ void setup() {
   }
   delay(2000);
   lcd.clear();
+}
+
+void windDirRead() {
+  unsigned int ref = analogRead(WIND_DIRECTION_ANALOG_PIN);
+  if (ref > 20) {
+    if (ref < 100) {
+      windDirection = 0;
+    } else {
+      if (ref < 300) {
+        windDirection = 90;
+      } else {
+        if (ref < 600) {
+          windDirection = 180;
+        } else {
+          if (ref < 900) {
+            windDirection = 270;
+          }
+        }
+      }
+    }
+  }
 }
 
 unsigned int getSpeedFromRevolutions(unsigned int revolutions, unsigned int elapsedms) {
@@ -600,6 +632,7 @@ void renderMetar() {
     strcat(metar, getString(strWINDCALM));
   } 
   else {
+    strcat(metar, zeroPad(utoa(windDirection, buf, 10), 3));
     if (windAvg < 100) {
       strcat(metar, zeroPad(utoa(windAvg, buf, 10), 2));
     } 
@@ -1002,5 +1035,8 @@ void loop() {
     gsmHttp();
     publishMetro.reset();
   }
-
+  
+  // Wind direction reading (TODO: Interrupts)
+  windDirRead();
+ 
 }
