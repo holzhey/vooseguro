@@ -28,13 +28,16 @@
 #define GPRS_MODULE_TX_PIN 8                        // GPRS module TX digital out
 #define I2C_LCD_ADDRESS 0x27                        // I2C LCD address
 #define TIMER_SENSORS 10000                         // Sensors read interval
-#define TIMER_LUX 2000                              // Luminosity read interval
-#define TIMER_COVER 66000                           // Clouds cover calculation interval
-#define LUX_SAMPLES (TIMER_COVER / TIMER_LUX)       // Maximum samples for luminosity history
+#define TIMER_LUX 1000                              // Luminosity read interval
+#define LUX_FEW 5                                   // Covering seconds for FEW cloud status
+#define LUX_SCT 10                                  // Covering seconds for SCT cloud status
+#define LUX_BKN 20                                  // Covering seconds for BKN cloud status
+#define LUX_OVC 40                                  // Covering seconds for OVC cloud status
+#define TIMER_COVER 60000                           // Clouds cover calculation interval
 #define TIMER_METAR 3000                            // Metar rendering interval
 #define TIMER_PUBLISH 30000                         // Server publish interval
 #define TIMER_ANEMOMETER 6000                       // Instant wind calculation interval
-#define TIMER_WINDS 65000                           // Wind gust and average reset interval
+#define TIMER_WINDS 60000                           // Wind gust and average reset interval
 #define DELAY_ANEMOMETER_LOW 50                     // Anemometer interrupt on low delay time
 #define DELAY_ANEMOMETER_HIGH 20                    // Anemometer interrupt on high delay time
 #define STS_OK 0                                    // Status OK for readings
@@ -42,10 +45,12 @@
 #define MEMORY_ICAO 20                              // EEPROM address for ICAO storage
 #define MEMORY_LAT 24                               // EEPROM address for latitude storage
 #define MEMORY_LNG 26                               // EEPROM address for longitude storage
-#define STR_METAR_SIZE 350                          // Size for METAR/TEMP char array
+#define STR_METAR_SIZE 410                          // Size for METAR/TEMP char array
 #define MAX_STRING 256                              // Maximum string from PROGMEM size
 
 char stringBuffer[MAX_STRING];                      // Buffer to get string from flash
+char stringTmp1[12];                                // Alternative buffer for comparators
+char stringTmp2[12];                                // Alternative buffer for comparators
 
 // Get strings from flash instead of SRAM
 char* getString(const char* str) {
@@ -66,7 +71,7 @@ const char strAtCsq[] PROGMEM = "AT+CSQ";
 const char strAtCgatt[] PROGMEM = "AT+CGATT=1";
 const char strAtGprsDetach[] PROGMEM = "AT+CGATT=0";
 const char strAtSapbrGprs[] PROGMEM = "AT+SAPBR=3,1,\"CONTYPE\",\"GPRS\"";
-const char strAtSapbrApn[] PROGMEM = "AT+SAPBR=3,1,\"APN\",\"Vivo Internet\"";
+const char strAtSapbrApn[] PROGMEM = "AT+SAPBR=3,1,\"APN\",\"VIVO\"";
 const char strAtSapbrOpen[] PROGMEM = "AT+SAPBR=1,1";
 const char strAtSapbrClose[] PROGMEM = "AT+SAPBR=0,1";
 const char strAtHttpInit[] PROGMEM = "AT+HTTPINIT";
@@ -74,16 +79,25 @@ const char strAtHttpAction[] PROGMEM = "AT+HTTPACTION=0";
 const char strAtHttpRead[] PROGMEM = "AT+HTTPREAD";
 const char strAtHttpTerminate[] PROGMEM = "AT+HTTPTERM";
 const char strUrlBase[] PROGMEM = "AT+HTTPPARA=\"URL\",\"http://weatherstation.wunderground.com/weatherstation/updateweatherstation.php?action=updateraw&ID=IRIOGRAN45&PASSWORD=metar12345";
+const char strUrlBool[] PROGMEM = "AT+HTTPPARA=\"URL\",\"http://bool.eti.br/metar.php?action=debug";
 const char strOffline[] PROGMEM = " (Offline)";
 const char strSending[] PROGMEM = "(Enviando)";
+const char strFailure[] PROGMEM = "( Falhou )";
 const char strTypeCustom[] PROGMEM = "&softwaretype=custom";
 const char strTypeDateUtc[] PROGMEM = "&dateutc=";
 const char strTypeHumidity[] PROGMEM = "&humidity=";
-const char strTypeDewpoint[] PROGMEM = "&dewpoint=";
+const char strTypeDewpoint[] PROGMEM = "&dewptf=";
 const char strTypeTemperature[] PROGMEM = "&tempf=";
 const char strTypePressure[] PROGMEM = "&baromin=";
-const char strTypeWindSpeed[] PROGMEM = "&windspdmph=";
+const char strTypeWindSpeed[] PROGMEM = "&windspeedmph=";
 const char strTypeWindGust[] PROGMEM = "&windgustmph=";
+const char strTypeClouds[] PROGMEM = "&clouds=";
+const char strTypeWindDir[] PROGMEM = "&winddir=";
+const char strTypeRainIn[] PROGMEM = "&rainin=";
+const char strTypeDailyRainIn[] PROGMEM = "&dailyrainin=";
+const char strTypeWindSpdMphAvg2m[] PROGMEM = "&windspdmph_avg2m=";
+const char strTypeWindDirAvg2m[] PROGMEM = "&winddir_avg2m=";
+const char strTypeWindGustMph10m[] PROGMEM = "&windgustmph_10m=";
 const char strMsgConfig1[] PROGMEM = "Config 1/7 : Dia";
 const char strMsgConfig2[] PROGMEM = "Config 2/7 : Mes";
 const char strMsgConfig3[] PROGMEM = "Config 3/7 : Ano";
@@ -100,6 +114,11 @@ const char strLng[] PROGMEM = "Lng ";
 const char strDoubleArrows[] PROGMEM = "vv";
 const char strQuadrupleArrows[] PROGMEM = "vvvv";
 const char strGPSArrows[] PROGMEM = "    vvv";
+const char strFEW[] PROGMEM = "FEW";
+const char strSCT[] PROGMEM = "SCT";
+const char strBKN[] PROGMEM = "BKN";
+const char strOVC[] PROGMEM = "OVC";
+const char strSKC[] PROGMEM = "SKC";
 
 boolean buttonAction = false;                       // Flag used for action button control
 boolean buttonMode = false;                         // Flag used for mode button control
@@ -141,19 +160,15 @@ unsigned long anemometerLastRead = 0;               // Last anemometer read mill
 unsigned long anemometerInterruptLast = 0;          // Last anemometer interrupt millis
 int anemometerState = LOW;                          // Anemometer pulse state
 unsigned int lux = 0;                               // Luminosity in Lux
+unsigned int estimatedLux = 0;                      // Estimated luminosity in Lux
+unsigned long lastCoverDetect = 0;                  // Lastest cloudy event detected
+boolean coverStatus = false;                        // Cloud event status
+byte cloudState = 0;                                // Cloud cover state
+
 unsigned int lastLux;
 unsigned long cloudIniTime;
 unsigned int cloudIniLux;
 byte cover = 0;                                     // Cloud cover in percent 
-struct samples {                                    // Struct for luminosity samples
-  unsigned int maxLux;                              // Maximum luminosity
-  unsigned int minLux;                              // Minimum luminosity
-  unsigned int avgLux;                              // Average luminosity
-  unsigned int history[LUX_SAMPLES];                // Luminosity history
-  unsigned int samples;                             // Luminosity history quantity
-};
-typedef struct samples LuxSamples;                  // Luminosity struct definition
-LuxSamples luxSamples;                              // Luminosity struct usage
 int status = STS_OK;                                // Last reading status
 char icao[5] = "SBXX";                              // ICAO code
 float latitude = 0;                                 // Latitude in decimals
@@ -248,12 +263,6 @@ void setup() {
   windDirection = 0;
   //winddirTimer.every(250, windDirRead);
 
-  // Cloud cover setup
-  luxSamples.maxLux = 0;
-  luxSamples.minLux = 99999;
-  luxSamples.avgLux = 0;
-  luxSamples.samples = 0;
-
   // LCD test pattern
   lcd.clear();
   for (byte x = 0; x < 80; x++) {
@@ -308,7 +317,7 @@ int8_t sendATcommand(char* ATcommand, char* expected_answer1, unsigned int timeo
       }
     }
   } 
-  while((answer == 0) && ((millis() - previous) < timeout));    
+  while((answer == 0) && ((millis() - previous) < timeout));  
   return answer;
 }
 
@@ -341,7 +350,8 @@ int8_t sendATcommand2(char* ATcommand, char* expected_answer1, char* expected_an
 void power_on(){
   uint8_t answer=0;
   byte attemps = 0;
-  answer = sendATcommand(getString(strAT), getString(strOK), 2000);
+  strcpy(stringTmp1, getString(strOK));
+  answer = sendATcommand(getString(strAT), stringTmp1, 2000);
   while (answer == 0)
   {
     digitalWrite(GPRS_MODULE_POWER_PIN,HIGH);
@@ -349,7 +359,7 @@ void power_on(){
     digitalWrite(GPRS_MODULE_POWER_PIN,LOW);
     byte ct = 0;
     while(answer == 0){  
-      answer = sendATcommand(getString(strAT), getString(strOK), 2000);
+      answer = sendATcommand(getString(strAT), stringTmp1, 2000);
       ct++;
       if (ct > 5) break;
     }
@@ -413,60 +423,82 @@ unsigned int getDewPoint(long temperature, float humidity) {
   return (temperature - ((100 - humidity) / 5));
 }
 
-void gsmHttp() {
+char * floatToString(char * outstr, double val, byte precision, byte widthp){
+  char temp[16]; //increase this if you need more digits than 15
+  byte i;
 
-  // Read network registration status
-  // CREG returns <N>,<STAT>
-  // <N> is code presentation, always 0
-  // <STAT> is registration status (1 is registered no roaming and 5 is registered with roaming)
+  temp[0]='\0';
+  outstr[0]='\0';
 
-  if (sendATcommand2(getString(strAtReg1), getString(strAtReg2), getString(strAtReg3), 2000) == 0 || (!gsmOk)) {
-    lcd.setCursor(10, 3);
-    lcd.print(getString(strOffline));
-  } 
+  if(val < 0.0){
+    strcpy(outstr,"-\0");  //print "-" sign
+    val *= -1;
+  }
+
+  if( precision == 0) {
+    strcat(outstr, ltoa(round(val),temp,10));  //prints the int part
+  }
   else {
-    lcd.setCursor(10, 3);
-    lcd.print(getString(strSending));
+    unsigned long frac, mult = 1;
+    byte padding = precision-1;
+    
+    while (precision--)
+      mult *= 10;
 
-    // Get signal quality report
-    // CSQ returns ERROR when no signal from GSM
+    val += 0.5/(float)mult;      // compute rounding factor
+    
+    strcat(outstr, ltoa(floor(val),temp,10));  //prints the integer part without rounding
+    strcat(outstr, ".\0"); // print the decimal point
 
-    sendATcommand(getString(strAtCsq), getString(strOK), 5000);
+    frac = (val - floor(val)) * mult;
 
-    // Attach from GPRS device
-    // Will return ERROR if GPRS module is fault
+    unsigned long frac1 = frac;
 
-    sendATcommand(getString(strAtCgatt), getString(strOK), 5000);
+    while(frac1 /= 10) 
+      padding--;
 
-    // Set bearer settings for applications based on IP
-    // 3,1 is "set bearer parameters" for profile 1
-    // The parameter is "CONTYPE" and the value is "GPRS"
-    // Sim 900 supports "CSD" and "GPRS" for "CONTYPE"
+    while(padding--) 
+      strcat(outstr,"0\0");    // print padding zeros
 
-    sendATcommand(getString(strAtSapbrGprs), getString(strOK), 5000);
+    strcat(outstr,ltoa(frac,temp,10));  // print fraction part
+  }
 
-    // Set another bearer setting
-    // "APN" is "VIVO"
+  // generate width space padding 
+  if ((widthp != 0)&&(widthp >= strlen(outstr))){
+    byte J=0;
+    J = widthp - strlen(outstr);
 
-    sendATcommand(getString(strAtSapbrApn), getString(strOK), 5000);
+    for (i=0; i< J; i++) {
+      temp[i] = ' ';
+    }
 
-    // Open bearer for profile 1 (1 = open, 1 = profile)
+    temp[i++] = '\0';
+    strcat(temp,outstr);
+    strcpy(outstr,temp);
+  }
 
-    sendATcommand(getString(strAtSapbrOpen), getString(strOK), 5000);
+  return outstr;
+}
 
-    // Initialize HTTP service
+float c2f(long temp) {
+  return (1.8 * temp) + 32;
+}
 
-    sendATcommand(getString(strAtHttpInit), getString(strOK), 5000);
+float kt2mph(long spd) {
+  return spd * 0.86898;
+}
 
-    // Build URL to call
+void renderMetarRemote(char* url) {
+  // Build URL to call
 
     memset(metar, '\0', STR_METAR_SIZE);
-    strcat(metar, getString(strUrlBase));
+    strcat(metar, url);
 
     // Append date UTC
 
     DateTime now = rtc.now();
     char buf[11];
+
     strcat(metar, getString(strTypeDateUtc));
     strcat(metar, zeroPad(utoa(now.year(), buf, 10), 4));
     strcat(metar, "-");
@@ -474,7 +506,7 @@ void gsmHttp() {
     strcat(metar, "-");
     strcat(metar, zeroPad(utoa(now.day(), buf, 10), 2));
     strcat(metar, "%20");
-    strcat(metar, zeroPad(utoa(now.hour(), buf, 10), 2));
+    strcat(metar, zeroPad(utoa(((now.hour() + 3) % 24), buf, 10), 2));
     strcat(metar, ":");
     strcat(metar, zeroPad(utoa(now.minute(), buf, 10), 2));
     strcat(metar, ":");
@@ -489,69 +521,172 @@ void gsmHttp() {
     // Append dewpoint
 
     strcat(metar, getString(strTypeDewpoint));
-    strcat(metar, utoa(dewpoint, buf, 10));
+    strcat(metar, floatToString(buf, c2f(dewpoint), 4, 0));
 
     // Append temperature (in fahrenheit)
 
-    tmp = (1.8 * temp) + 32;
     strcat(metar, getString(strTypeTemperature));
-    strcat(metar, utoa(tmp, buf, 10));
+    strcat(metar, floatToString(buf, c2f(temp), 4, 0));
 
     // Append baro pressure (in inHg)
-    tmp = baro * 2.96;
     strcat(metar, getString(strTypePressure));
-    strcat(metar, utoa(tmp, buf, 10));
+    strcat(metar, floatToString(buf, ((baro * 2.96) / 100), 4, 0));
 
-    // Append clouds cover
     // Append software type
 
     strcat(metar, getString(strTypeCustom));
+    
+    // Append empty rain data
+    
+    strcat(metar, getString(strTypeRainIn));
+    strcat(metar, utoa(0, buf, 10));
+    strcat(metar, getString(strTypeDailyRainIn));
+    strcat(metar, utoa(0, buf, 10));
 
-    // Append wind direction (TODO)
+    // Append wind direction (360 degree angle)
+
+    strcat(metar, getString(strTypeWindDir));
+    strcat(metar, utoa(windDirection, buf, 10));
+    strcat(metar, getString(strTypeWindDirAvg2m));
+    strcat(metar, utoa(windDirection, buf, 10));
 
     // Append wind speed (in mph)
 
-    tmp = windAvg * 0.86898;
     strcat(metar, getString(strTypeWindSpeed));
-    strcat(metar, utoa(tmp, buf, 10));
+    strcat(metar, floatToString(buf, kt2mph(windAvg), 4, 0));
+    strcat(metar, getString(strTypeWindSpdMphAvg2m));
+    strcat(metar, floatToString(buf, kt2mph(windAvg), 4, 0));
 
     // Append wind direction average (TODO)
 
     // Append wind gust (in mph)
 
-    tmp = windGust * 0.86898;
     strcat(metar, getString(strTypeWindGust));
-    strcat(metar, utoa(tmp, buf, 10));
+    strcat(metar, floatToString(buf, kt2mph(windGust), 4, 0));
+    strcat(metar, getString(strTypeWindGustMph10m));
+    strcat(metar, floatToString(buf, kt2mph(windGust), 4, 0));
+    
+    // Append cloud data
+    
+    strcat(metar, getString(strTypeClouds));
+    switch (cloudState) {
+      case 0:
+        strcat(metar, getString(strSKC));
+        break;
+      case 1:
+        strcat(metar, getString(strFEW));
+        break;
+      case 2:
+        strcat(metar, getString(strSCT));
+        break;
+      case 3:
+        strcat(metar, getString(strBKN));
+        break;
+      case 4:
+        strcat(metar, getString(strOVC));
+        break;
+    }   
 
     // Finish URL and set it
 
     strcat(metar, "\"");
-    sendATcommand(metar, getString(strOK), 5000);
+}
+
+void gsmHttp() {
+  
+  // Read network registration status
+  // CREG returns <N>,<STAT>
+  // <N> is code presentation, always 0
+  // <STAT> is registration status (1 is registered no roaming and 5 is registered with roaming)
+
+  strcpy(stringTmp1, getString(strAtReg2));
+  strcpy(stringTmp2, getString(strAtReg3));
+
+  if (sendATcommand2(getString(strAtReg1), stringTmp1, stringTmp2, 2000) == 0 || (!gsmOk)) {
+    lcd.setCursor(10, 3);
+    lcd.print(getString(strOffline));
+  } 
+  else {
+    byte gsmStatus = 0;
+    lcd.setCursor(10, 3);
+    lcd.print(getString(strSending));
+    
+    strcpy(stringTmp1, getString(strOK));
+
+    // Get signal quality report
+    // CSQ returns ERROR when no signal from GSM
+
+    sendATcommand(getString(strAtCsq), stringTmp1, 5000);
+
+    // Attach from GPRS device
+    // Will return ERROR if GPRS module is fault
+
+    sendATcommand(getString(strAtCgatt), stringTmp1, 5000);
+
+    // Set bearer settings for applications based on IP
+    // 3,1 is "set bearer parameters" for profile 1
+    // The parameter is "CONTYPE" and the value is "GPRS"
+    // Sim 900 supports "CSD" and "GPRS" for "CONTYPE"
+
+    sendATcommand(getString(strAtSapbrGprs), stringTmp1, 5000);
+
+    // Set another bearer setting
+    // "APN" is "VIVO"
+
+    sendATcommand(getString(strAtSapbrApn), stringTmp1, 5000);
+
+    // Open bearer for profile 1 (1 = open, 1 = profile)
+
+    sendATcommand(getString(strAtSapbrOpen), stringTmp1, 5000);
+
+    // Initialize HTTP service
+
+    sendATcommand(getString(strAtHttpInit), stringTmp1, 5000);
+
+//    // Build METAR DATA BOOL
+//
+//    renderMetarRemote(getString(strUrlBool));
+//    sendATcommand(metar, stringTmp1, 5000);
+//
+//    // Do HTTP action (0 = GET, 1 = POST and 2 = HEAD)
+//
+//    gsmStatus = sendATcommand(getString(strAtHttpAction), stringTmp1, 15000);
+    
+    // Build METAR DATA WU
+
+    renderMetarRemote(getString(strUrlBase));
+    Serial.println(metar);
+    sendATcommand(metar, stringTmp1, 5000);
 
     // Do HTTP action (0 = GET, 1 = POST and 2 = HEAD)
 
-    sendATcommand(getString(strAtHttpAction), getString(strOK), 15000);
+    gsmStatus = sendATcommand(getString(strAtHttpAction), stringTmp1, 15000);
 
     // Read response data
-
-    //    gsmSerial.println(getString(strAtHttpRead));
-    //    delay(2000);
-    //    while(gsmSerial.available() > 0)  gsmSerial.read();
-
+//
+//    gsmSerial.println(getString(strAtHttpRead));
+//    delay(2000);
+//    while(gsmSerial.available() > 0) Serial.write(gsmSerial.read());
+//
     // Terminate HTTP service
 
-    sendATcommand(getString(strAtHttpTerminate), getString(strOK), 5000);
+    sendATcommand(getString(strAtHttpTerminate), stringTmp1, 5000);
 
-    // Open bearer for profile 1 (0 = close, 1 = profile)
+    // Close bearer for profile 1 (0 = close, 1 = profile)
 
-    sendATcommand(getString(strAtSapbrClose), getString(strOK), 5000);
+    sendATcommand(getString(strAtSapbrClose), stringTmp1, 5000);
 
     // Detach GPRS device
 
-    sendATcommand(getString(strAtGprsDetach), getString(strOK), 5000);
+    sendATcommand(getString(strAtGprsDetach), stringTmp1, 5000);
 
-    lcd.setCursor(10, 3);
-    for (byte x = 0; x < 10; x++) lcd.print(' ');
+    if (gsmStatus == 0) {
+      lcd.setCursor(10, 3);
+      lcd.print(getString(strFailure)); 
+    } else {
+      lcd.setCursor(10, 3);
+      for (byte x = 0; x < 10; x++) lcd.print(' ');
+    }
   }
 }
 
@@ -653,6 +788,26 @@ void renderMetar() {
   strcat(metar, utoa(temp, buf, 10));
   strcat(metar, "/");
   strcat(metar, utoa(dewpoint, buf, 10));
+  switch (cloudState) {
+    case 0:
+      break;
+    case 1:
+      strcat(metar, " ");
+      strcat(metar, getString(strFEW));
+      break;
+    case 2:
+      strcat(metar, " ");
+      strcat(metar, getString(strSCT));
+      break;
+    case 3:
+      strcat(metar, " ");
+      strcat(metar, getString(strBKN));
+      break;
+    case 4:
+      strcat(metar, " ");
+      strcat(metar, getString(strOVC));
+      break;
+  }   
   strcat(metar, " Q");
   strcat(metar, utoa(baro, buf, 10));
   strcat(metar, getString(strREMARK));
@@ -719,34 +874,6 @@ void doPrintTimestamp() {
   lcd.print(zeroPad(utoa(now.minute(), buf, 10), 2));
 }
 
-short getDayNumber() {
-  DateTime now = rtc.now();
-  unsigned int y = now.year();
-  unsigned int m = now.month();
-  unsigned int d = now.day();
-  short DN;
-  int days[]={
-    0,31,59,90,120,151,181,212,243,273,304,334  };    // Number of days at the beginning of the month in a not leap year.
-  //Start to calculate the number of day
-  if (m==1 || m==2){
-    DN = days[(m-1)]+d;                     //for any type of year, it calculate the number of days for January or february
-  }                        // Now, try to calculate for the other months
-  else if ((y % 4 == 0 && y % 100 != 0) ||  y % 400 == 0){  //those are the conditions to have a leap year
-    DN = days[(m-1)]+d+1;     // if leap year, calculate in the same way but increasing one day
-  }
-  else {                                //if not a leap year, calculate in the normal way, such as January or February
-    DN = days[(m-1)]+d;
-  }
-  return DN;
-}
-
-unsigned int getDaylightTime(float lat) {
-  int yearday = getDayNumber();
-  double d = 23.45 * sin(0.98630137 * (284.0 + yearday));
-  double td = 0.133333 * acos(-tan(lat) * tan(d));
-  return (td * 1000);
-}
-
 char* doTransformDecimal2Degree(char* result, float coord, int &c_deg, int &c_min, int &c_sec) {
   c_deg = round(trunc(coord));
   coord = abs((coord - trunc(coord))) * 60;
@@ -794,47 +921,46 @@ void loop() {
   // Luminosity read and samples handling task
   if (luxMetro.check()) {
     lux = BH1750_Read();
-    if (luxSamples.samples == 0) {
-      luxSamples.avgLux = lux;
-    } 
-    else {
-      luxSamples.avgLux = (luxSamples.avgLux + lux) / 2;
-    }
-    if (lux > luxSamples.maxLux) {
-      luxSamples.maxLux = lux;
-    }
-    if (lux < luxSamples.minLux) {
-      luxSamples.minLux = lux;
-    }
-    luxSamples.history[luxSamples.samples] = lux;
-    luxSamples.samples++;
-    luxMetro.reset();
     
-    if (lux <= lastLux) {
-      cloudIniTime = millis();
-      
+    // New cover algo
+    if (estimatedLux == 0) {
+      estimatedLux = lux - 10;
     }
-    lastLux = lux;
-    
+    if (!coverStatus) {
+      if (lux < estimatedLux) {
+        lastCoverDetect = millis();
+        coverStatus = true;
+      }
+    } else {
+      unsigned long coverTime = (millis() - lastCoverDetect) / 1000;
+      if (coverTime < LUX_FEW) {
+        cloudState = 0;
+      } else {
+        if (coverTime < LUX_SCT) {
+          cloudState = 1;
+        } else {
+          if (coverTime < LUX_BKN) {
+            cloudState = 2;
+          } else {
+            if (coverTime < LUX_OVC) {
+              cloudState = 3;
+            } else {
+              cloudState = 4;
+            }
+          }
+        }
+      }
+      if (lux > estimatedLux) {
+        coverStatus = false;
+      }
+    }
   }
 
-  // Clouds cover estimation task
+  // Clouds cover delay reset
   if (coverMetro.check()) {
-    int luxDelta = 0;
-    for (unsigned int x = 1; x < luxSamples.samples; x++) {
-      luxDelta += (luxSamples.history[x] - luxSamples.history[x - 1]);
+    if (lux > estimatedLux) {
+        cloudState = 0;
     }
-    int luxTotalDelta = (luxSamples.maxLux - luxSamples.minLux);
-    float luxFactor;
-    if (luxTotalDelta != 0) {
-      luxFactor = luxDelta / luxTotalDelta;
-    } else {
-      luxFactor = 0;
-    }
-    luxSamples.maxLux = 0;
-    luxSamples.minLux = 99999;
-    luxSamples.avgLux = 0;
-    luxSamples.samples = 0;
     coverMetro.reset();
   }
 
@@ -1009,16 +1135,6 @@ void loop() {
         }
         EEPROM.write(address + offset, value);
       }
-    }
-    lcd.clear();
-    lcd.print("Status");
-    lcd.setCursor(2, 2);
-    lcd.print("Daylight = ");
-    lcd.print(getDaylightTime(latitude));
-    lcd.setCursor(2, 3);
-    lcd.print("Dias = ");
-    lcd.print(getDayNumber());
-    while (!buttonPressed(buttonMode, BUTTON_MODE_PIN)) {
     }
     lcd.clear();
   }
