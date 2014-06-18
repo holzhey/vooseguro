@@ -45,7 +45,7 @@
 #define MEMORY_ICAO 20                              // EEPROM address for ICAO storage
 #define MEMORY_LAT 24                               // EEPROM address for latitude storage
 #define MEMORY_LNG 26                               // EEPROM address for longitude storage
-#define STR_METAR_SIZE 410                          // Size for METAR/TEMP char array
+#define STR_METAR_SIZE 500                          // Size for METAR/TEMP char array
 #define MAX_STRING 256                              // Maximum string from PROGMEM size
 
 char stringBuffer[MAX_STRING];                      // Buffer to get string from flash
@@ -480,12 +480,12 @@ char * floatToString(char * outstr, double val, byte precision, byte widthp){
   return outstr;
 }
 
-float c2f(long temp) {
-  return (1.8 * temp) + 32;
+float c2f(long tempCelsius) {
+  return (1.8 * tempCelsius) + 32;
 }
 
-float kt2mph(long spd) {
-  return spd * 0.86898;
+float kt2mph(long speedKt) {
+  return ((speedKt * 6076.0) * (1.0 / 5280.0));
 }
 
 void renderMetarRemote(char* url) {
@@ -530,7 +530,7 @@ void renderMetarRemote(char* url) {
 
     // Append baro pressure (in inHg)
     strcat(metar, getString(strTypePressure));
-    strcat(metar, floatToString(buf, ((baro * 2.96) / 100), 4, 0));
+    strcat(metar, floatToString(buf, (baro * 0.02953600), 8, 0)); // 0.02953500
 
     // Append software type
 
@@ -553,18 +553,18 @@ void renderMetarRemote(char* url) {
     // Append wind speed (in mph)
 
     strcat(metar, getString(strTypeWindSpeed));
-    strcat(metar, floatToString(buf, kt2mph(windAvg), 4, 0));
+    strcat(metar, floatToString(buf, kt2mph(windAvg), 6, 0));
     strcat(metar, getString(strTypeWindSpdMphAvg2m));
-    strcat(metar, floatToString(buf, kt2mph(windAvg), 4, 0));
+    strcat(metar, floatToString(buf, kt2mph(windAvg), 6, 0));
 
     // Append wind direction average (TODO)
 
     // Append wind gust (in mph)
 
     strcat(metar, getString(strTypeWindGust));
-    strcat(metar, floatToString(buf, kt2mph(windGust), 4, 0));
+    strcat(metar, floatToString(buf, kt2mph(windGust), 6, 0));
     strcat(metar, getString(strTypeWindGustMph10m));
-    strcat(metar, floatToString(buf, kt2mph(windGust), 4, 0));
+    strcat(metar, floatToString(buf, kt2mph(windGust), 6, 0));
     
     // Append cloud data
     
@@ -655,7 +655,6 @@ void gsmHttp() {
     // Build METAR DATA WU
 
     renderMetarRemote(getString(strUrlBase));
-    Serial.println(metar);
     sendATcommand(metar, stringTmp1, 5000);
 
     // Do HTTP action (0 = GET, 1 = POST and 2 = HEAD)
